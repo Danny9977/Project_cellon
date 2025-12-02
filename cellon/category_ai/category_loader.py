@@ -1,4 +1,4 @@
-# cellon/category_ai/category_loader.py
+# cellon/category_ai/category_loader.py. asdfasdfasdf
 import os  # 폴더/파일 목록을 다루는 모듈
 import re  # 문자열에서 패턴 찾기 위한 모듈
 import hashlib  # 문자열을 해시값으로 변환하는 모듈
