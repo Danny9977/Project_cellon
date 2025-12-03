@@ -58,7 +58,7 @@ from sheets_client import SheetsClient, _cp_request, extract_paid_price_from_ite
 
 # ui_main.py
 from config import today_fmt, label_for_domain, _a1_col, digits_only, is_macos
-
+from cellon.config import CATEGORY_EXCEL_DIR
 
 # =========================
 # 유틸 함수
@@ -225,6 +225,40 @@ def _try_ordersheets_with_variants(path: str, param_variants: list[dict]) -> dic
         raise last_err
     raise RuntimeError("ordersheets 호출 시도 실패: 유효한 파라미터 조합이 없습니다.")
 
+# =========================
+# 카테고리 마스터 생성 (QThread)
+# =========================
+def start_category_build(self):
+    from cellon.category_ai.category_worker import CategoryBuildWorker
+    from pathlib import Path
+
+    # ★ 경로는 Danny님 환경에 맞게 직접 입력 (또는 config에서 불러와도 됨)
+    #category_dir = Path("/Users/jeehoonkim/Desktop/category_excels")
+    #category_dir = Path.home() / "Desktop" / "category_excels"  # 예시: 바탕화면의 category_excels 폴더 mac / win 공통
+    category_dir = CATEGORY_EXCEL_DIR
+    
+    self._log("📂 카테고리 분석을 시작합니다...")
+
+    # 스레드 생성
+    self.cat_worker = CategoryBuildWorker(category_dir)
+    self.cat_worker.progress.connect(self._on_cat_progress)
+    self.cat_worker.finished.connect(self._on_cat_finished)
+
+    self.cat_worker.start()
+
+# ---- 콜백: 카테고리 빌드 완료 ----
+def _on_cat_progress(self, percent: int, msg: str):
+    self._log(f"{percent}% | {msg}")
+
+# ---- 콜백: 카테고리 빌드 완료 ----
+def _on_cat_finished(self, df):
+    if df is None:
+        self._log("❌ 카테고리 분석 실패")
+        return
+
+    self._log(f"✅ 카테고리 분석 완료 — 총 {len(df)}개 카테고리")
+    # 여기서 df를 멤버 변수에 저장하거나 UI에 반영할 수 있음
+    
 
 # =========================
 # 메인 앱 (UI + 로직)
@@ -279,6 +313,11 @@ class ChromeCrawler(QWidget):
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         layout.addWidget(self.log)
+
+        # 0) 카테고리 자동화 버튼 추가
+        self.btn_cat_build = QPushButton("카테고리 분석 시작")
+        self.btn_cat_build.clicked.connect(self.start_category_build)
+        layout.addWidget(self.btn_cat_build)
 
         # 1) clear + Sheets 연결
         row_a = QHBoxLayout()

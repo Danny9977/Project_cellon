@@ -2,6 +2,10 @@
 from pathlib import Path
 import platform
 from datetime import datetime
+from pathlib import Path
+
+# ====== category_ai 에서 카테고리 엑셀 파일 경로 ==========
+CATEGORY_EXCEL_DIR = Path.home() / "Desktop" / "category_excels"
 
 # =========================
 # Google Sheets 설정
