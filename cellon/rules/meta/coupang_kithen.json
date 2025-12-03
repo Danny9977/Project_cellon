@@ -1,0 +1,34 @@
+{
+  "marketplace": "coupang",
+  "big_group": "주방용품",          // 엑셀 파일 단위 (나중에 생활용품/패션 등)
+  "categories": [
+    {
+      "category_id": "80785",
+      "category_path": "주방용품>교자상/밥상/상커버>교자상",
+      "commission_rate": 10.8,
+
+      "search_options": [
+        { "name": "가구/홈 재질", "required": false },
+        { "name": "색상계열",     "required": false },
+        { "name": "형태",         "required": false }
+      ],
+
+      "detail_attributes": [
+        { "name": "가로길이",        "unit": "cm", "required": false },
+        { "name": "접이식 가능여부", "required": false },
+        { "name": "상판 재질",      "required": false }
+      ],
+
+      "raw_row_index": 3
+    },
+
+    {
+      "category_id": "80786",
+      "category_path": "주방용품>교자상/밥상/상커버>밥상",
+      "commission_rate": 10.8,
+      "search_options": [ ... ],
+      "detail_attributes": [ ... ],
+      "raw_row_index": 7
+    }
+  ]
+}
