@@ -2,10 +2,17 @@
 from pathlib import Path
 import platform
 from datetime import datetime
-from pathlib import Path
 
 # ====== category_ai 에서 카테고리 엑셀 파일 경로 ==========
 CATEGORY_EXCEL_DIR = Path.home() / "Desktop" / "category_excels"
+
+# ====== category_ai 캐시 디렉토리 (카테고리 마스터/파일 캐시) ======
+# 원하시는 위치로 바꿔도 됩니다. (예: 프로젝트 내부 cache 폴더 등)
+CACHE_DIR = Path.home() / "Desktop" / "category_cache"
+# 예를 들어 프로젝트 폴더 안에 두고 싶으면:
+# PROJECT_ROOT = Path(__file__).resolve().parent
+# CACHE_DIR = PROJECT_ROOT / "cache"
+
 
 # =========================
 # Google Sheets 설정

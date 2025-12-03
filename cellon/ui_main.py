@@ -48,18 +48,30 @@ from openpyxl.utils import column_index_from_string
 from PIL import Image
 
 # config에서 필요한 값 import
-from config import *
+from .config import *  # 가능하면 * 대신 필요한 것만 가져오는 쪽으로 나중에 정리
 
 import gspread
 from google.oauth2.service_account import Credentials
 
 # 시트/쿠팡 API: 분리된 모듈
-from sheets_client import SheetsClient, _cp_request, extract_paid_price_from_item
+from .sheets_client import (
+    SheetsClient,
+    _cp_request,
+    extract_paid_price_from_item,
+)
 
-# ui_main.py
-from config import today_fmt, label_for_domain, _a1_col, digits_only, is_macos
-from category_ai.category_worker import CategoryBuildWorker
-from config import CATEGORY_EXCEL_DIR
+# ui_main.py – config 및 category_ai
+from .config import (
+    today_fmt,
+    label_for_domain,
+    _a1_col,
+    digits_only,
+    is_macos,
+    CATEGORY_EXCEL_DIR,
+)
+
+from .category_ai.category_worker import CategoryBuildWorker
+
 
 # =========================
 # 유틸 함수
