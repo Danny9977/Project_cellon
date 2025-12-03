@@ -1,34 +1,26 @@
 {
-  "marketplace": "coupang",
-  "big_group": "주방용품",          // 엑셀 파일 단위 (나중에 생활용품/패션 등)
-  "categories": [
-    {
-      "category_id": "80785",
-      "category_path": "주방용품>교자상/밥상/상커버>교자상",
-      "commission_rate": 10.8,
+  "meta_kitchen_pot": {
+    "label": "주방용품>냄비/솥",
+    "source_costco_paths": [
+      "홈/키친>조리용품>쿡웨어"
+    ],
+    "source_domemae_paths": [
+      "생활용품>주방용품>냄비/솥",
+      "생활용품>주방용품>냄비/솥>곰솥/들통"
+    ],
+    "keywords_include": ["냄비", "양수냄비", "양수 냄비", "전골냄비", "전골 냄비"],
+    "keywords_exclude": ["프라이팬", "후라이팬", "팬", "그릴"]
+  },
 
-      "search_options": [
-        { "name": "가구/홈 재질", "required": false },
-        { "name": "색상계열",     "required": false },
-        { "name": "형태",         "required": false }
-      ],
-
-      "detail_attributes": [
-        { "name": "가로길이",        "unit": "cm", "required": false },
-        { "name": "접이식 가능여부", "required": false },
-        { "name": "상판 재질",      "required": false }
-      ],
-
-      "raw_row_index": 3
-    },
-
-    {
-      "category_id": "80786",
-      "category_path": "주방용품>교자상/밥상/상커버>밥상",
-      "commission_rate": 10.8,
-      "search_options": [ ... ],
-      "detail_attributes": [ ... ],
-      "raw_row_index": 7
-    }
-  ]
+  "meta_kitchen_pan": {
+    "label": "주방용품>프라이팬",
+    "source_costco_paths": [
+      "홈/키친>조리용품>프라이팬/그릴"
+    ],
+    "source_domemae_paths": [
+      "생활용품>주방용품>프라이팬"
+    ],
+    "keywords_include": ["프라이팬", "후라이팬", "팬", "그릴팬", "그릴 팬"],
+    "keywords_exclude": ["냄비", "솥"]
+  }
 }

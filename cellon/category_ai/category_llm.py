@@ -12,6 +12,8 @@ import pandas as pd
 
 from .category_loader import load_category_master, MASTER_CACHE_FILE
 
+
+
 # ===== Ollama 설정 =====
 OLLAMA_BASE_URL = "http://localhost:11434"
 # 설치된 모델 중 하나 선택: phi3:medium 또는 llama3:8b
@@ -367,6 +369,83 @@ def suggest_category_with_llm(
             "category_path": None,
             "reason": f"LLM 응답 파싱 실패: {e} | raw={raw}",
         }
+def suggest_category_with_candidates(
+    product_name: str,
+    brand: Optional[str],
+    extra_text: Optional[str],
+    candidates_df: Optional[pd.DataFrame],
+) -> Dict[str, Any]:
+    """
+    candidates_df: category_id, category_path 컬럼을 가진 DataFrame
+    - None 또는 empty면 기존 suggest_category_with_llm로 fallback
+    - 아니면 후보 안에서만 고르게 LLM 프롬프트를 구성
+    """
+    if candidates_df is None or candidates_df.empty:
+        return suggest_category_with_llm(
+            product_name=product_name,
+            brand=brand,
+            extra_text=extra_text,
+        )
+
+    candidates_text = "\n".join(
+        f"- {row['category_id']}: {row['category_path']}"
+        for _, row in candidates_df.iterrows()
+    )
+
+    system_prompt = SYSTEM_PROMPT + """
+
+너는 반드시 아래 '후보 카테고리 목록' 중에서만 하나를 골라야 한다.
+후보 목록에 없는 카테고리는 새로 만들지 마라.
+"""
+
+    user_prompt = f"""
+상품 정보:
+- 상품명: {product_name}
+- 브랜드: {brand or ""}
+- 추가 설명: {extra_text or ""}
+
+후보 카테고리 목록:
+{candidates_text}
+
+위 후보 중에서 가장 적절한 category_id 하나를 고르고,
+해당 category_path와 reason을 JSON 한 개로만 출력해라.
+"""
+
+    try:
+        raw = call_ollama_chat(system_prompt, user_prompt)
+    except LLMError as e:
+        return {
+            "category_id": None,
+            "category_path": None,
+            "reason": f"LLM 호출 실패(후보 제한 모드): {e}",
+        }
+
+    # 아래 JSON 파싱은 기존 suggest_category_with_llm에서 쓰던 로직 재사용
+    try:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError(f"JSON 블록을 찾지 못했습니다: {raw[:200]}")
+
+        json_str = raw[start : end + 1]
+        obj = json.loads(json_str)
+
+        cat_id = obj.get("category_id")
+        cat_path = obj.get("category_path")
+        reason = obj.get("reason") or ""
+
+        return {
+            "category_id": cat_id,
+            "category_path": cat_path,
+            "reason": reason,
+        }
+    except Exception as e:
+        return {
+            "category_id": None,
+            "category_path": None,
+            "reason": f"LLM 응답 파싱 실패(후보 제한 모드): {e} | raw={raw}",
+        }
+
 
 
 # ===== 5) 단독 실행용 테스트 =====

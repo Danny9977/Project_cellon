@@ -138,6 +138,47 @@ def _mask(s: str, left: int = 4, right: int = 3) -> str:
         return "*" * len(s)
     return s[:left] + "*" * (len(s) - left - right) + s[-right:]
 
+# =========================
+# 코스트코 카테고리(브레드크럼) 추출
+# =========================
+COSTCO_CATEGORY_SELECTOR = (
+    "div.container.bottom-header.BottomHeader.has-components "
+    "ol.breadcrumb li a"
+)
+
+def extract_costco_category(driver) -> str | None:
+    """
+    코스트코 상품페이지에서 상단 breadcrumb 카테고리 텍스트를 추출.
+    예) '메인 / 홈/키친 / 조리용품 / 쿡웨어' -> '홈/키친 / 조리용품 / 쿡웨어'
+    """
+    try:
+        # breadcrumb 영역이 뜰 때까지 잠깐 대기
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, COSTCO_CATEGORY_SELECTOR)
+            )
+        )
+    except TimeoutException:
+        return None
+    except Exception:
+        return None
+
+    try:
+        els = driver.find_elements(By.CSS_SELECTOR, COSTCO_CATEGORY_SELECTOR)
+        crumbs = [e.text.strip() for e in els if e.text.strip()]
+
+        if not crumbs:
+            return None
+
+        # 맨 앞 '메인'은 보통 버리는 게 보기 좋음
+        if crumbs[0] == "메인":
+            crumbs = crumbs[1:]
+
+        return " / ".join(crumbs) if crumbs else None
+    except Exception as e:
+        # 혹시 모를 예외는 로그에만 남기고 None 리턴
+        print("코스트코 카테고리 추출 에러:", e)
+        return None
 
 # =========================
 # 쿠팡 OpenAPI HMAC 서명 (성공 예제 기준)
@@ -859,6 +900,20 @@ class ChromeCrawler(QWidget):
                 )
             except Exception:
                 pass
+            
+            # === 코스트코 카테고리(breadcrumb) 추출 ===
+            self.crawled_category = ""
+            if is_costco_url(current_url):
+                try:
+                    cat = extract_costco_category(driver)
+                    if cat:
+                        self.crawled_category = cat
+                        self._log(f"📂 원본 카테고리(코스트코): {self.crawled_category}")
+                    else:
+                        self._log("📂 원본 카테고리(코스트코): (없음 또는 추출 실패)")
+                except Exception as e:
+                    self._log(f"⚠️ 코스트코 카테고리 추출 중 오류: {e}")
+            
 
             title_value = ""
             wait = WebDriverWait(driver, 5)
@@ -912,6 +967,7 @@ class ChromeCrawler(QWidget):
 
             self._log("—" * 40)
             self._log(f"제목: {self.crawled_title or '(없음)'}")
+            self._log(f"카테고리(원본): {self.crawled_category or '(없음)'}")   # ← 추가
             self._log(f"가격(숫자만): {self.crawled_price or '(없음)'}")
             self._log(f"URL: {self.crawled_url or '(없음)'}")
             self._log("—" * 40)

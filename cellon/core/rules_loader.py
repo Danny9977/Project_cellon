@@ -7,11 +7,20 @@ from pathlib import Path
 from typing import List
 from typing import List  # 타입 힌트용 import
 
+from functools import lru_cache
+from typing import Dict, Any
+
+from cellon.config import BASE_DIR  # BASE_DIR가 config에 없다면 Path(__file__).resolve().parent.parent 정도로 조정
+
 from .category_model import (
     CategoryRule,         # 카테고리 규칙 클래스
     CategoryCondition,    # 카테고리 조건 클래스
     Marketplace,          # 마켓 Enum
 )
+
+RULES_DIR = Path(__file__).resolve().parent.parent / "rules"
+META_DIR = RULES_DIR / "meta"
+COUPANG_DIR = RULES_DIR / "coupang"
 
 
 # 프로젝트 루트 기준으로 rules 디렉토리 경로를 계산
@@ -82,5 +91,27 @@ def load_rules_from_json(filename: str) -> List[CategoryRule]:
 
     return rules
 
+def _load_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
+
+@lru_cache(maxsize=1)
+def load_meta_kitchen_rules() -> Dict[str, Any]:
+    """
+    코스트코/도매매 → 메타 주방 카테고리 매핑 (coupang_kitchen.json)
+    """
+    path = META_DIR / "coupang_kitchen.json"
+    return _load_json(path)
+
+
+@lru_cache(maxsize=1)
+def load_coupang_kitchen_rules() -> Dict[str, Any]:
+    """
+    메타 주방 카테고리 → 쿠팡 카테고리 ID 매핑 (kitchen_rules.json)
+    """
+    path = COUPANG_DIR / "kitchen_rules.json"
+    return _load_json(path)
 
