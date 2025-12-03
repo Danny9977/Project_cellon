@@ -1,0 +1,26 @@
+{
+  "meta_kitchen_pot": {
+    "label": "주방용품>냄비/솥",
+    "source_costco_paths": [
+      "홈/키친>조리용품>쿡웨어"
+    ],
+    "source_domemae_paths": [
+      "생활용품>주방용품>냄비/솥",
+      "생활용품>주방용품>냄비/솥>곰솥/들통"
+    ],
+    "keywords_include": ["냄비", "양수냄비", "양수 냄비", "전골냄비", "전골 냄비"],
+    "keywords_exclude": ["프라이팬", "후라이팬", "팬", "그릴"]
+  },
+
+  "meta_kitchen_pan": {
+    "label": "주방용품>프라이팬",
+    "source_costco_paths": [
+      "홈/키친>조리용품>프라이팬/그릴"
+    ],
+    "source_domemae_paths": [
+      "생활용품>주방용품>프라이팬"
+    ],
+    "keywords_include": ["프라이팬", "후라이팬", "팬", "그릴팬", "그릴 팬"],
+    "keywords_exclude": ["냄비", "솥"]
+  }
+}
