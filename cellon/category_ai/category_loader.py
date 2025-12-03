@@ -1,3 +1,10 @@
+
+# ==== 다른 코드에서 이 모듈을 사용하는 예시: ====
+# from cellon.category_ai.category_loader import load_category_master
+# df = load_category_master()
+# =================================================
+
+
 # cellon/category_ai/category_loader.py. asdfasdfasdf
 import os  # 폴더/파일 목록을 다루는 모듈
 import re  # 문자열에서 패턴 찾기 위한 모듈
@@ -143,9 +150,54 @@ def get_category_master(
 
     return master  # 최종 결과 반환
 
+# === 3) 외부에서 쓰기 편하게: 마스터 로드 헬퍼 ===
+_category_master_cache: pd.DataFrame | None = None  # 내부 캐시
+
+
+def load_category_master(force_rebuild: bool = False,
+                         progress_cb: Optional[Callable[[int, str], None]] = None) -> pd.DataFrame:
+    """
+    - force_rebuild=False 이면:
+        1) 메모리 캐시 있으면 그대로 사용
+        2) 메모리 캐시 없고, MASTER_CACHE_FILE 이 있으면 pkl 로드
+        3) pkl 도 없으면 get_category_master() 돌려서 새로 생성
+    - force_rebuild=True 이면:
+        무조건 get_category_master()로 다시 만들고 pkl 갱신
+    """
+    global _category_master_cache
+
+    # 1) 메모리 캐시 우선
+    if _category_master_cache is not None and not force_rebuild:
+        return _category_master_cache
+
+    # 2) 파일 캐시(pkl) 사용
+    if not force_rebuild and MASTER_CACHE_FILE.exists():
+        if progress_cb:
+            progress_cb(0, f"기존 카테고리 마스터 캐시 로드: {MASTER_CACHE_FILE}")
+        df = pd.read_pickle(MASTER_CACHE_FILE)
+        if progress_cb:
+            progress_cb(100, f"카테고리 마스터 캐시 로드 완료 (총 {len(df)}개)")
+        _category_master_cache = df
+        return df
+
+    # 3) 없으면 새로 생성
+    df = get_category_master(category_dir=CATEGORY_DIR, progress_cb=progress_cb)
+    _category_master_cache = df
+    return df
+
+
+
 if __name__ == "__main__":  # 이 파일을 직접 실행할 때만 아래 코드 실행
     def debug_log(p, m):  # 진행상황을 출력하는 함수
         print(f"{p}% | {m}")
 
     df = get_category_master(progress_cb=debug_log)  # 마스터 데이터 생성, 진행상황 출력
     print("총 카테고리 수:", len(df))  # 전체 카테고리 수 출력
+
+
+__all__ = [
+    "extract_categories_from_file",
+    "get_category_master",
+    "load_category_master",
+    "MASTER_CACHE_FILE",
+]

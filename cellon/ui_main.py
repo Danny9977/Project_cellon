@@ -58,7 +58,8 @@ from sheets_client import SheetsClient, _cp_request, extract_paid_price_from_ite
 
 # ui_main.py
 from config import today_fmt, label_for_domain, _a1_col, digits_only, is_macos
-from cellon.config import CATEGORY_EXCEL_DIR
+from category_ai.category_worker import CategoryBuildWorker
+from config import CATEGORY_EXCEL_DIR
 
 # =========================
 # 유틸 함수
@@ -434,6 +435,10 @@ class ChromeCrawler(QWidget):
 
         # 자동 초기화
         QTimer.singleShot(300, self._startup_sequence)
+        
+        # 카테고리 마스터 관련 상태
+        self.category_worker: CategoryBuildWorker | None = None
+        self.category_master_df = None  # 필요하면 나중에 다른 곳에서 참조
 
     # --------------------------
     # 이하 메서드는 기존 main_app.py 의 ChromeCrawler 메서드들을
@@ -467,6 +472,63 @@ class ChromeCrawler(QWidget):
                 self._log("ℹ️ 기존 창 연결 실패 → '크롬(디버그) 실행' 수행")
                 self.launch_debug_chrome()
  
+        # === 카테고리 마스터 생성 시작 ===
+    
+    def start_category_build(self):
+        """
+        [카테고리 분석 시작] 버튼 클릭 시 호출될 메서드.
+        - QThread 워커를 띄워서 엑셀들을 분석
+        - 진행 상황을 log 창에 5% 단위로 표시 (category_loader가 이미 5% 단위로 콜백 호출)
+        - UI는 동안에도 다른 버튼/기능 사용 가능
+        """
+        # 이미 돌고 있으면 중복 실행 방지
+        if self.category_worker is not None and self.category_worker.isRunning():
+            self._log("ℹ️ 카테고리 분석이 이미 진행 중입니다.")
+            return
+
+        # config.py 에 정의된 CATEGORY_EXCEL_DIR 사용
+        category_dir = CATEGORY_EXCEL_DIR
+
+        self._log(f"📂 카테고리 엑셀 분석 시작: {category_dir}")
+        self._log("⏳ 엑셀 파일을 분석하며 캐시를 갱신합니다. (진행률은 5% 단위로 표시)")
+
+        # 워커 생성
+        self.category_worker = CategoryBuildWorker(category_dir, parent=self)
+        self.category_worker.progress.connect(self._on_category_progress)
+        self.category_worker.finished.connect(self._on_category_finished)
+        self.category_worker.error.connect(self._on_category_error)
+
+        # 백그라운드에서 실행
+        self.category_worker.start()
+
+    def _on_category_progress(self, percent: int, message: str):
+        """
+        워커에서 progress_cb로 호출한 진행 상황을 받아서 log 창에 출력.
+        """
+        # percent 를 앞에 붙여서 로그 표시
+        self._log(f"[카테고리] {percent}% - {message}")
+
+    def _on_category_finished(self, df):
+        """
+        워커가 정상 완료되었을 때 호출.
+        df 는 category_master DataFrame.
+        """
+        self.category_worker = None
+        self.category_master_df = df
+        try:
+            n = len(df) if df is not None else 0
+        except Exception:
+            n = 0
+        self._log(f"✅ 카테고리 마스터 생성 완료 (총 {n}개 카테고리)")
+
+    def _on_category_error(self, msg: str):
+        """
+        워커 내부에서 예외 발생 시 호출.
+        """
+        self.category_worker = None
+        self._log(f"❌ 카테고리 마스터 생성 중 오류: {msg}")
+
+    
     # ---------- 구글시트 연결 ----------
     def connect_sheets(self):
         """구글시트 연결 버튼 동작용 메서드"""

@@ -179,3 +179,8 @@ def _a1_col(col_index: int) -> str:
         n, rem = divmod(n - 1, 26)
         result = chr(ord('A') + rem) + result
     return result
+
+# === 로컬 LLM(Ollama) 설정 ===
+LOCAL_LLM_BASE_URL = "http://localhost:11434"
+#LOCAL_LLM_MODEL = "llama3:8b"
+LOCAL_LLM_MODEL = "phi3:medium"
