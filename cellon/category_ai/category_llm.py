@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -14,7 +15,7 @@ import pandas as pd
 from ..config import LOCAL_LLM_BASE_URL, LOCAL_LLM_MODEL
 
 
-from .category_loader import load_category_master
+from .category_loader import load_category_master, MASTER_CACHE_FILE
 
 # ===== Ollama 설정 =====
 OLLAMA_BASE_URL = LOCAL_LLM_BASE_URL
@@ -368,6 +369,7 @@ def suggest_category_with_llm(
             "category_path": None,
             "reason": f"LLM 응답 파싱 실패: {e} | raw={raw}",
         }
+        
 def suggest_category_with_candidates(
     product_name: str,
     brand: Optional[str],
@@ -379,18 +381,26 @@ def suggest_category_with_candidates(
     - None 또는 empty면 기존 suggest_category_with_llm로 fallback
     - 아니면 후보 안에서만 고르게 LLM 프롬프트를 구성
     """
+
+    # 0) 후보가 없으면 → 기존 전체 검색 함수로 위임 + 시간 측정
     if candidates_df is None or candidates_df.empty:
-        return suggest_category_with_llm(
+        start_ts = time.monotonic()
+        result = suggest_category_with_llm(
             product_name=product_name,
             brand=brand,
             extra_text=extra_text,
         )
+        elapsed = time.monotonic() - start_ts
+        print(f"[LLM] 전체 검색 모드 호출 소요 시간: {elapsed:.2f}초")
+        return result
 
+    # 1) 후보 텍스트 구성
     candidates_text = "\n".join(
         f"- {row['category_id']}: {row['category_path']}"
         for _, row in candidates_df.iterrows()
     )
 
+    # 2) system_prompt / user_prompt 구성 (여기서 항상 정의!)
     system_prompt = SYSTEM_PROMPT + """
 
 너는 반드시 아래 '후보 카테고리 목록' 중에서만 하나를 골라야 한다.
@@ -410,8 +420,15 @@ def suggest_category_with_candidates(
 해당 category_path와 reason을 JSON 한 개로만 출력해라.
 """
 
+    # 3) LLM 호출 + 시간 측정
     try:
+        start_ts = time.monotonic()
         raw = call_ollama_chat(system_prompt, user_prompt)
+        elapsed = time.monotonic() - start_ts
+        print(
+            f"[LLM] 후보 제한 모드 호출 소요 시간: {elapsed:.2f}초 "
+            f"(후보 수={len(candidates_df)})"
+        )
     except LLMError as e:
         return {
             "category_id": None,
@@ -419,7 +436,7 @@ def suggest_category_with_candidates(
             "reason": f"LLM 호출 실패(후보 제한 모드): {e}",
         }
 
-    # 아래 JSON 파싱은 기존 suggest_category_with_llm에서 쓰던 로직 재사용
+    # 4) JSON 파싱 (기존 로직 그대로)
     try:
         start = raw.find("{")
         end = raw.rfind("}")
@@ -444,6 +461,7 @@ def suggest_category_with_candidates(
             "category_path": None,
             "reason": f"LLM 응답 파싱 실패(후보 제한 모드): {e} | raw={raw}",
         }
+
 
 
 

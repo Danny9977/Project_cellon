@@ -149,6 +149,21 @@ def suggest_category_with_llm(
       "reason": "..."
     }
     """
+    
+    try:
+        # ✅ LLM 호출 시간 측정 시작
+        start_ts = time.monotonic()
+        raw = call_ollama_chat(SYSTEM_PROMPT, user_prompt)
+        elapsed = time.monotonic() - start_ts
+        print(f"[LLM] suggest_category_with_llm 응답 시간: {elapsed:.2f}초 (후보 수={len(candidates)})")
+        # ✅ 여기까지
+    except LLMError as e:
+        return {
+            "category_id": None,
+            "category_path": None,
+            "reason": f"LLM 호출 실패: {e}",
+        }
+        
     # (필요하면 여기에서 get_category_master() 를 호출해서
     #  향후 Step2에서 유사도 검색 등에 활용할 수 있음)
     _ = get_category_master()

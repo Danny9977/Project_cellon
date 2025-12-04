@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Callable
 
 import pandas as pd
 
-from typing import Any, Dict, Optional, Callable
-
-
 from cellon.category_ai.category_loader import load_category_master
-from cellon.category_ai.category_llm import suggest_category_with_candidates
 from cellon.core.rules_loader import (
     load_meta_rules,
     load_coupang_rules,
     list_available_groups,
     load_all_market_groups,
 )
+
+import re
+
+from cellon.category_ai.category_llm import (
+    suggest_category_with_candidates,
+    _extract_keywords,
+)
+
 
 class CategoryMatcher:
     """
@@ -229,10 +233,29 @@ class CategoryMatcher:
         ]
         self._log(f"  ▶ 후보 cat_master 필터링 완료: {len(candidates_df)}개 행")
 
-        # 후보가 1개면 → 룰만으로 결정 (LLM 미사용)
+        # ✅ 1차: leaf(마지막 뎁스) 완전 일치 룰 시도
+        leaf_result = self._pick_by_leaf_keyword(
+            product_name=product_name,
+            candidates_df=candidates_df,
+        )
+
+        if leaf_result is not None:
+            # 1차 룰로 이미 확정된 경우 → LLM은 부르지 않음
+            result = {
+                "category_id": leaf_result["category_id"],
+                "category_path": leaf_result["category_path"],
+                "reason": leaf_result["reason"],
+                "used_llm": False,
+                "meta_key": meta_key,
+                "num_candidates": len(candidates_df),
+            }
+            self._log(f"  🔚 1차 leaf 룰 결과 사용 (LLM 미호출): {result}")
+            return result
+
+        # ✅ 2차: 후보가 1개뿐이면 → 룰만으로 결정 (LLM 미사용)
         if len(candidates_df) == 1:
             row = candidates_df.iloc[0]
-            llm_result = {
+            result = {
                 "category_id": str(row["category_id"]),
                 "category_path": str(row["category_path"]),
                 "reason": f"group={self.group}, meta_key={meta_key} 룰에 의해 단일 후보 자동 선택",
@@ -240,18 +263,107 @@ class CategoryMatcher:
                 "meta_key": meta_key,
                 "num_candidates": 1,
             }
+            self._log(f"  🔚 단일 후보 자동 선택 (LLM 미호출): {result}")
+            return result
 
-        # 후보가 2개 이상이면 → 제한된 후보 리스트로 LLM 호출
+        # ✅ 3차: 그 외(후보 2개 이상이고 leaf 룰도 실패) → 제한된 후보만 LLM에 전달
         self._log(f"  ▶ 후보 {len(candidates_df)}개 → 제한된 후보만 LLM에 전달")
-        llm_result = suggest_category_with_candidates(
+
+        llm_raw = suggest_category_with_candidates(
             product_name=product_name,
-            brand=brand,
-            extra_text=extra_text,
+            brand=brand,                     # 필요하면 brand 그대로 넘김
+            extra_text=source_category_path, # ✅ 여기가 source_path가 아니라 source_category_path
             candidates_df=candidates_df,
         )
-        llm_result.setdefault("used_llm", True)
-        llm_result.setdefault("meta_key", meta_key)
-        llm_result.setdefault("num_candidates", len(candidates_df))
 
-        self._log(f"  🔚 LLM 결과 수신 (제한 후보): {llm_result}")
-        return llm_result
+        # CategoryMatcher 스타일에 맞게 공통 필드 보정
+        llm_raw.update(
+            {
+                "used_llm": True,
+                "meta_key": meta_key,
+                "num_candidates": len(candidates_df),
+            }
+        )
+
+        self._log(f"  🔚 LLM 결과 수신 (제한 후보): {llm_raw}")
+        return llm_raw
+
+
+    
+    # ======= 내부 헬퍼: leaf 정규화 및 매칭 =======
+    @staticmethod
+    def _normalize_leaf_text(text: str) -> str:
+        """
+        카테고리 leaf 이름 / 키워드를 비교하기 위한 정규화:
+        - 공백 제거
+        - 한글/영문/숫자만 남기기
+        """
+        text = text or ""
+        # 한글/영문/숫자만 남기고 나머지는 제거
+        text = re.sub(r"[^0-9a-zA-Z가-힣]", "", text)
+        return text.lower()
+
+    def _pick_by_leaf_keyword(
+        self,
+        product_name: str,
+        candidates_df: pd.DataFrame,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        1차 룰:
+        - 상품명에서 키워드 추출
+        - 각 후보 category_path 의 마지막 뎁스(leaf)를 비교
+        - leaf 와 키워드가 '완전히 일치'하는 후보가 딱 1개이면, 그걸 바로 선택
+        - 여러 개면 애매하므로 LLM에 넘기도록 None 반환
+        """
+        if candidates_df is None or candidates_df.empty:
+            return None
+
+        # 상품명에서 키워드 추출 (예: '쿡에버 올인원 편수 냄비 3P' → ['쿡에버','올인원','편수','냄비','채망포함'])
+        keywords = _extract_keywords(product_name, brand=None, extra=None)
+
+        # 키워드를 정규화 (공백/기호 제거)
+        kw_norms = {
+            self._normalize_leaf_text(kw)
+            for kw in keywords
+        }
+        if not kw_norms:
+            return None
+
+        matches = []
+
+        for _, row in candidates_df.iterrows():
+            cat_id = str(row["category_id"])
+            cat_path = str(row["category_path"])
+
+            # 카테고리 마지막 뎁스만 추출 (예: '주방용품>취사도구>냄비>편수냄비' → '편수냄비')
+            leaf = cat_path.split(">")[-1].strip()
+            leaf_norm = self._normalize_leaf_text(leaf)
+
+            if leaf_norm and leaf_norm in kw_norms:
+                matches.append(
+                    {
+                        "category_id": cat_id,
+                        "category_path": cat_path,
+                        "leaf": leaf,
+                    }
+                )
+
+        if len(matches) == 1:
+            m = matches[0]
+            self._log("  ✅ [1차 룰] leaf 완전 일치로 카테고리 확정")
+            self._log(f"     - leaf='{m['leaf']}', category_id={m['category_id']}, path={m['category_path']}")
+
+            return {
+                "category_id": m["category_id"],
+                "category_path": m["category_path"],
+                "reason": f"상품명 키워드와 쿠팡 카테고리 마지막 뎁스가 완전히 일치합니다. (leaf='{m['leaf']}')",
+                "used_llm": False,
+            }
+
+        if len(matches) > 1:
+            # 여러 후보가 leaf 기준으로 겹치면 애매하니 LLM으로 넘김
+            self._log("  ⚠️ [1차 룰] leaf 일치 후보가 여러 개 → LLM으로 위임")
+            for m in matches:
+                self._log(f"     - 후보 leaf='{m['leaf']}', category_id={m['category_id']}, path={m['category_path']}")
+
+        return None
