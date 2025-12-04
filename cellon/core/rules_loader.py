@@ -1,5 +1,4 @@
 # cellon/core/rules_loader.py
-# LLM 한테 카테고리 매칭 코드를 만들고 있어서 당분간 이 코드 사용은 보류
 
 from __future__ import annotations  # 미래 버전 호환을 위한 import
 import json

@@ -1,5 +1,4 @@
 # cellon/core/product.py
-# LLM 한테 카테고리 매칭 코드를 만들고 있어서 당분간 이 코드 사용은 보류
 
 from __future__ import annotations
 
