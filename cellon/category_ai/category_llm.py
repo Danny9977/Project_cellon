@@ -10,16 +10,15 @@ from typing import Optional, Dict, Any, List
 import requests
 import pandas as pd
 
-from .category_loader import load_category_master, MASTER_CACHE_FILE
+# ← 여기 새로 추가
+from ..config import LOCAL_LLM_BASE_URL, LOCAL_LLM_MODEL
 
 
+from .category_loader import load_category_master
 
 # ===== Ollama 설정 =====
-OLLAMA_BASE_URL = "http://localhost:11434"
-# 설치된 모델 중 하나 선택: phi3:medium 또는 llama3:8b
-# Step1에서 권장: llama3:8b
-OLLAMA_MODEL = "phi3:medium"
-
+OLLAMA_BASE_URL = LOCAL_LLM_BASE_URL
+OLLAMA_MODEL = LOCAL_LLM_MODEL
 
 # ===== 1) 카테고리 마스터 로드 헬퍼 =====
 _category_df: Optional[pd.DataFrame] = None

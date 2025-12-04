@@ -41,7 +41,7 @@ class LLMError(RuntimeError):
 
 
 def call_ollama_chat(system_prompt: str, user_prompt: str,
-                     timeout: float = 300.0) -> str:
+                     timeout: float = 180.0) -> str:
     """
     Ollama /api/chat 호출 래퍼.
     - system_prompt, user_prompt 를 넣고,

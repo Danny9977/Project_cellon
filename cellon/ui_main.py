@@ -53,6 +53,10 @@ from .config import *  # 가능하면 * 대신 필요한 것만 가져오는 쪽
 import gspread
 from google.oauth2.service_account import Credentials
 
+# 카테고리 매칭 모듈
+from .core.category_matcher import CategoryMatcher
+
+
 # 시트/쿠팡 API: 분리된 모듈
 from .sheets_client import (
     SheetsClient,
@@ -328,6 +332,9 @@ class ChromeCrawler(QWidget):
         self.setWindowTitle("크롬 크롤링 도구 (gspread + Coupang OpenAPI)")
         self.setGeometry(0, 0, 460, 580)
 
+        # 카테고리 매칭용 매처 (kitchen 그룹 기준)
+        self.cat_matcher = CategoryMatcher(group="kitchen", logger=self._log)
+        
         # 등록상품명 캐시 (sellerProductId -> 등록상품명)
         self._cp_seller_name_cache: dict[str, str] = {}
 
@@ -345,6 +352,11 @@ class ChromeCrawler(QWidget):
         self.crawled_price = ""
         self.crawled_url = ""
 
+        # 카테고리 관련 (원본/쿠팡)
+        self.crawled_category = ""          # 코스트코/도매매 등 원본 카테고리 path
+        self.coupang_category_id = ""       # 매칭된 쿠팡 category_id
+        self.coupang_category_path = ""     # 매칭된 쿠팡 category_path
+        
         # Google Sheets
         self.sheets = SheetsClient(
             SERVICE_ACCOUNT_JSON,
@@ -915,6 +927,9 @@ class ChromeCrawler(QWidget):
             
             # === 코스트코 카테고리(breadcrumb) 추출 ===
             self.crawled_category = ""
+            self.coupang_category_id = ""
+            self.coupang_category_path = ""
+            
             if is_costco_url(current_url):
                 try:
                     cat = extract_costco_category(driver)
@@ -983,6 +998,59 @@ class ChromeCrawler(QWidget):
             self._log(f"가격(숫자만): {self.crawled_price or '(없음)'}")
             self._log(f"URL: {self.crawled_url or '(없음)'}")
             self._log("—" * 40)
+
+            # === 쿠팡 카테고리 매칭 ===
+            try:
+                # 1) source 판단 (현재는 costco/domemae만 사용)
+                source = ""
+                if is_costco_url(current_url):
+                    source = "costco"
+                elif is_domeme_url(current_url):
+                    source = "domemae"
+                # TODO: owner 클랜 붙이면 elif "owner" 추가
+
+                self._log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                self._log("[UI] 카테고리 매칭 진입")
+                self._log(f"  - source={source or '(빈 값)'}")
+                self._log(f"  - 원본 카테고리(path)='{self.crawled_category or ''}'")
+                self._log(f"  - 상품명='{self.crawled_title or ''}'")
+
+                if source:
+                    match = self.cat_matcher.match_category(
+                        source=source,
+                        source_category_path=self.crawled_category or "",
+                        product_name=self.crawled_title or "",
+                        brand=None,
+                        extra_text=None,
+                    )
+
+                    if not match:
+                        self._log("  ❌ CategoryMatcher가 None 또는 빈 dict를 반환했습니다.")
+                        self.coupang_category_id = ""
+                        self.coupang_category_path = ""
+                    else:
+                        self.coupang_category_id = match.get("category_id") or ""
+                        self.coupang_category_path = match.get("category_path") or ""
+
+                        used_llm = match.get("used_llm")
+                        meta_key = match.get("meta_key")
+                        num_candidates = match.get("num_candidates")
+                        reason = match.get("reason")
+
+                        self._log("  🔎 [카테고리 매칭 결과 요약]")
+                        self._log(f"    - category_id={self.coupang_category_id or '(없음)'}")
+                        self._log(f"    - category_path={self.coupang_category_path or '(없음)'}")
+                        self._log(f"    - meta_key={meta_key}")
+                        self._log(f"    - num_candidates={num_candidates}")
+                        self._log(f"    - used_llm={used_llm}")
+                        if reason:
+                            self._log(f"    - reason={reason}")
+                else:
+                    self._log("  ℹ️ 현재 URL은 costco/domemae가 아니라서 카테고리 매칭을 건너뜁니다.")
+                self._log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            except Exception as e:
+                self._log(f"⚠️ [UI] 카테고리 매칭 중 예외 발생: {e}")
+
 
             self._log("📝 크롤 완료: 시트에 바로 기록합니다.")
             self.record_data()

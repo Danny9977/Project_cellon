@@ -13,6 +13,11 @@ CACHE_DIR = Path.home() / "Desktop" / "category_cache"
 # PROJECT_ROOT = Path(__file__).resolve().parent
 # CACHE_DIR = PROJECT_ROOT / "cache"
 
+# === 로컬 LLM(Ollama) 설정 ===
+LOCAL_LLM_BASE_URL = "http://localhost:11434"
+LOCAL_LLM_MODEL = "llama3:8b"
+#LOCAL_LLM_MODEL = "phi3:medium"
+
 
 # =========================
 # Google Sheets 설정
@@ -187,7 +192,3 @@ def _a1_col(col_index: int) -> str:
         result = chr(ord('A') + rem) + result
     return result
 
-# === 로컬 LLM(Ollama) 설정 ===
-LOCAL_LLM_BASE_URL = "http://localhost:11434"
-#LOCAL_LLM_MODEL = "llama3:8b"
-LOCAL_LLM_MODEL = "phi3:medium"
