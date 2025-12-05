@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Callable
 
 import pandas as pd
+import difflib 
 
 from cellon.category_ai.category_loader import load_category_master
 from cellon.core.rules_loader import (
@@ -239,6 +240,24 @@ class CategoryMatcher:
             candidates_df=candidates_df,
         )
 
+        if strong_result is not None:
+            result = {
+                "category_id": strong_result["category_id"],
+                "category_path": strong_result["category_path"],
+                "reason": strong_result["reason"],
+                "used_llm": False,
+                "meta_key": meta_key,
+                "num_candidates": len(candidates_df),
+            }
+            self._log(f"  🔚 강제 name 룰 결과 사용 (LLM 미호출): {result}")
+            return result
+
+        # ✅ 2차: leaf(마지막 뎁스) 완전 일치 룰 시도
+        leaf_result = self._pick_by_leaf_keyword(
+            product_name=product_name,
+            candidates_df=candidates_df,
+        )
+        
         if leaf_result is not None:
             # 1차 룰로 이미 확정된 경우 → LLM은 부르지 않음
             result = {
@@ -252,7 +271,7 @@ class CategoryMatcher:
             self._log(f"  🔚 1차 leaf 룰 결과 사용 (LLM 미호출): {result}")
             return result
 
-        # ✅ 2차: 후보가 1개뿐이면 → 룰만으로 결정 (LLM 미사용)
+        # ✅ 3차: 후보가 1개뿐이면 → 룰만으로 결정 (LLM 미사용)
         if len(candidates_df) == 1:
             row = candidates_df.iloc[0]
             result = {
@@ -266,7 +285,7 @@ class CategoryMatcher:
             self._log(f"  🔚 단일 후보 자동 선택 (LLM 미호출): {result}")
             return result
 
-        # ✅ 3차: 그 외(후보 2개 이상이고 leaf 룰도 실패) → 제한된 후보만 LLM에 전달
+        # ✅ 4차: 그 외(후보 2개 이상이고 leaf 룰도 실패) → 제한된 후보만 LLM에 전달
         self._log(f"  ▶ 후보 {len(candidates_df)}개 → 제한된 후보만 LLM에 전달")
 
         llm_raw = suggest_category_with_candidates(
@@ -291,17 +310,28 @@ class CategoryMatcher:
 
     
     # ======= 내부 헬퍼: leaf 정규화 및 매칭 =======
+        # ======= 내부 헬퍼: leaf 정규화 및 매칭 =======
     @staticmethod
     def _normalize_leaf_text(text: str) -> str:
         """
         카테고리 leaf 이름 / 키워드를 비교하기 위한 정규화:
-        - 공백 제거
+        - 공백/기호 제거
         - 한글/영문/숫자만 남기기
         """
         text = text or ""
-        # 한글/영문/숫자만 남기고 나머지는 제거
         text = re.sub(r"[^0-9a-zA-Z가-힣]", "", text)
         return text.lower()
+
+    @staticmethod
+    def _char_similarity(a: str, b: str) -> float:
+        """
+        문자 단위 유사도 (0.0 ~ 1.0)
+        - 1.0: 완전 동일
+        - 0.8 이상: 상당히 비슷
+        """
+        if not a or not b:
+            return 0.0
+        return difflib.SequenceMatcher(None, a, b).ratio()
 
     def _pick_by_leaf_keyword(
         self,
@@ -309,61 +339,183 @@ class CategoryMatcher:
         candidates_df: pd.DataFrame,
     ) -> Optional[Dict[str, Any]]:
         """
-        1차 룰:
-        - 상품명에서 키워드 추출
-        - 각 후보 category_path 의 마지막 뎁스(leaf)를 비교
-        - leaf 와 키워드가 '완전히 일치'하는 후보가 딱 1개이면, 그걸 바로 선택
-        - 여러 개면 애매하므로 LLM에 넘기도록 None 반환
+        1차 룰 (강한 확신이 있을 때만 확정):
+
+        - 상품명에서 키워드 추출 (_extract_keywords 사용)
+        - 정규화 + 연속 단어 bigram 을 만들어 토큰 후보 생성
+        - 각 후보 category_path 의 마지막 뎁스(leaf)와 문자 유사도 계산
+        - best_score 가 threshold 이상이고, 2등과의 차이가 margin 이상이면
+          → 1차에서 확정
+        - 나머지는 LLM에게 위임 (None 반환)
         """
         if candidates_df is None or candidates_df.empty:
             return None
 
-        # 상품명에서 키워드 추출 (예: '쿡에버 올인원 편수 냄비 3P' → ['쿡에버','올인원','편수','냄비','채망포함'])
-        keywords = _extract_keywords(product_name, brand=None, extra=None)
-
-        # 키워드를 정규화 (공백/기호 제거)
-        kw_norms = {
-            self._normalize_leaf_text(kw)
-            for kw in keywords
-        }
-        if not kw_norms:
+        # 1) 상품명 키워드 추출
+        raw_keywords = _extract_keywords(product_name, brand=None, extra=None)
+        if not raw_keywords:
             return None
 
-        matches = []
+        # 정규화된 토큰
+        norm_tokens = [
+            self._normalize_leaf_text(k)
+            for k in raw_keywords
+        ]
+        norm_tokens = [t for t in norm_tokens if t]
+
+        if not norm_tokens:
+            return None
+
+        # 2) 연속 단어 bigram 합성 (띄어쓰기 보정: 편수 + 냄비 → 편수냄비)
+        bigram_tokens: list[str] = []
+        for i in range(len(norm_tokens) - 1):
+            bigram_tokens.append(norm_tokens[i] + norm_tokens[i + 1])
+
+        all_tokens = norm_tokens + bigram_tokens
+        if not all_tokens:
+            return None
+
+        # 3) 각 후보 leaf와의 문자 유사도 계산
+        best = None
+        best_score = 0.0
+        second_best = 0.0
 
         for _, row in candidates_df.iterrows():
             cat_id = str(row["category_id"])
             cat_path = str(row["category_path"])
 
-            # 카테고리 마지막 뎁스만 추출 (예: '주방용품>취사도구>냄비>편수냄비' → '편수냄비')
+            # 마지막 뎁스 추출 (예: '주방용품>취사도구>냄비>편수냄비' → '편수냄비')
             leaf = cat_path.split(">")[-1].strip()
             leaf_norm = self._normalize_leaf_text(leaf)
 
-            if leaf_norm and leaf_norm in kw_norms:
+            if not leaf_norm:
+                continue
+
+            # 이 leaf에 대해 가장 잘 맞는 토큰의 유사도
+            leaf_best = 0.0
+            for token in all_tokens:
+                score = self._char_similarity(leaf_norm, token)
+                if score > leaf_best:
+                    leaf_best = score
+
+            if leaf_best > best_score:
+                second_best = best_score
+                best_score = leaf_best
+                best = {
+                    "category_id": cat_id,
+                    "category_path": cat_path,
+                    "leaf": leaf,
+                }
+            elif leaf_best > second_best:
+                second_best = leaf_best
+
+        # 4) 최종 결정 조건
+        # - threshold 이상: 꽤 확신 있는 경우만
+        # - margin 이상: 1등과 2등 차이가 일정 수준 이상
+        THRESHOLD = 0.75   # 너무 낮추지 않는 게 좋습니다 (0.8~0.9 사이 추천)
+        MARGIN = 0.05      # 5% 정도 차이는 나야 "단일 승자"로 인정
+
+        if best and best_score >= THRESHOLD and (best_score - second_best) >= MARGIN:
+            self._log(
+                "  ✅ [1차 룰] leaf-문자 유사도로 카테고리 확정 "
+                f"(best={best_score:.2f}, second={second_best:.2f})"
+            )
+            self._log(
+                f"     - leaf='{best['leaf']}', "
+                f"category_id={best['category_id']}, path={best['category_path']}"
+            )
+            return {
+                "category_id": best["category_id"],
+                "category_path": best["category_path"],
+                "reason": (
+                    "상품명 키워드(단어/연속 단어)의 문자 유사도가 "
+                    "쿠팡 카테고리 마지막 뎁스와 매우 높습니다. "
+                    f"(similarity={best_score:.2f}, leaf='{best['leaf']}')"
+                ),
+                "used_llm": False,
+            }
+
+        if best:
+            self._log(
+                "  ℹ️ [1차 룰] leaf-문자 유사도 후보는 있었지만 "
+                "threshold 미달 또는 2등과의 차이가 작아서 LLM으로 위임 "
+                f"(best={best_score:.2f}, second={second_best:.2f})"
+            )
+
+        return None
+    
+    def _pick_by_strong_keyword(
+        self,
+        product_name: str,
+        candidates_df: pd.DataFrame,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        강제 name 룰:
+        - coupang/kitchen_rules.json 의 "__strong_name_rules__" 를 읽어서
+        - 상품명에 특정 키워드가 포함되고
+        - 그 target_category_id 가 현재 후보(candidates_df)에 포함되어 있으면
+          → 그 카테고리로 바로 확정.
+        """
+        if candidates_df is None or candidates_df.empty:
+            return None
+
+        rules = self.coupang_rules.get("__strong_name_rules__", []) or []
+        if not rules:
+            return None
+
+        name_lower = (product_name or "").lower()
+        # 후보 ID 셋 (문자열 기준)
+        candidate_ids = set(candidates_df["category_id"].astype(str).tolist())
+
+        matches: list[Dict[str, Any]] = []
+
+        for rule in rules:
+            keywords = rule.get("keywords") or []
+            target_id = str(rule.get("target_category_id") or "").strip()
+            if not target_id:
+                continue
+
+            # 현재 meta_key에서 뽑힌 후보들 안에 target_id가 없으면 스킵
+            if target_id not in candidate_ids:
+                continue
+
+            # 키워드 중 하나라도 상품명에 포함되면 매칭
+            if any(kw.lower() in name_lower for kw in keywords):
                 matches.append(
                     {
-                        "category_id": cat_id,
-                        "category_path": cat_path,
-                        "leaf": leaf,
+                        "target_id": target_id,
+                        "rule": rule,
                     }
                 )
 
         if len(matches) == 1:
             m = matches[0]
-            self._log("  ✅ [1차 룰] leaf 완전 일치로 카테고리 확정")
-            self._log(f"     - leaf='{m['leaf']}', category_id={m['category_id']}, path={m['category_path']}")
+            target_id = m["target_id"]
+            rule = m["rule"]
+
+            row = candidates_df[candidates_df["category_id"].astype(str) == target_id].iloc[0]
+            cat_path = str(row["category_path"])
+
+            self._log(
+                "  ✅ [강제 name 룰] 키워드에 의해 카테고리 확정: "
+                f"target_id={target_id}, path={cat_path}, rule_keywords={rule.get('keywords')}"
+            )
 
             return {
-                "category_id": m["category_id"],
-                "category_path": m["category_path"],
-                "reason": f"상품명 키워드와 쿠팡 카테고리 마지막 뎁스가 완전히 일치합니다. (leaf='{m['leaf']}')",
+                "category_id": target_id,
+                "category_path": cat_path,
+                "reason": rule.get("reason")
+                or f"강제 name 룰에 의해 '{rule.get('keywords')}' 키워드로 카테고리를 결정했습니다.",
                 "used_llm": False,
             }
 
         if len(matches) > 1:
-            # 여러 후보가 leaf 기준으로 겹치면 애매하니 LLM으로 넘김
-            self._log("  ⚠️ [1차 룰] leaf 일치 후보가 여러 개 → LLM으로 위임")
+            # 여러 룰이 동시에 걸리면 모호하니 LLM/leaf 룰로 넘김
+            self._log("  ⚠️ [강제 name 룰] 매칭 룰이 여러 개 → LLM/leaf 룰로 위임")
             for m in matches:
-                self._log(f"     - 후보 leaf='{m['leaf']}', category_id={m['category_id']}, path={m['category_path']}")
+                self._log(
+                    f"     - target_id={m['target_id']}, rule_keywords={m['rule'].get('keywords')}"
+                )
 
         return None
+
