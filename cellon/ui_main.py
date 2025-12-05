@@ -10,6 +10,9 @@ import subprocess
 import time
 import io
 import base64
+import pandas as pd
+
+from typing import Optional
 
 from urllib.parse import urlparse, urlencode, quote  # canonical query 생성을 위해 quote 사용
 from datetime import datetime, timedelta, timezone, date
@@ -333,7 +336,11 @@ class ChromeCrawler(QWidget):
         self.setGeometry(0, 0, 460, 580)
 
         # 카테고리 매칭용 매처 (kitchen 그룹 기준)
-        self.cat_matcher = CategoryMatcher(group="kitchen", logger=self._log)
+        self.cat_matcher = CategoryMatcher(
+            group="kitchen", 
+            logger=self._log,
+            manual_resolver=self._resolve_category_manually,
+        )
         
         # 등록상품명 캐시 (sellerProductId -> 등록상품명)
         self._cp_seller_name_cache: dict[str, str] = {}
@@ -2540,3 +2547,122 @@ class ChromeCrawler(QWidget):
         except Exception as e:
             self._log(f"⚠️ 브라우저 fetch base64 디코딩 실패: {e}")
             return None
+    
+    # === 카테고리 수동 선택 다이얼로그 ===
+    def _resolve_category_manually(
+        self,
+        product_name: str,
+        source_category_path: str,
+        candidates_df: pd.DataFrame,
+    ) -> Optional[dict]:
+        """
+        CategoryMatcher에서 호출하는 콜백.
+        - 후보 카테고리를 UI로 보여주고
+        - 사용자가 하나를 고르면 dict를 리턴
+        - 'LLM에게 맡기기'를 누르면 None 리턴
+        """
+        if candidates_df is None or candidates_df.empty:
+            return None
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("카테고리 수동 선택")
+        layout = QVBoxLayout(dlg)
+
+        # 상단 설명
+        info = QLabel(
+            f"상품명: {product_name}\n"
+            f"원본 카테고리: {source_category_path}\n\n"
+            "아래 후보 중 하나를 선택하거나, LLM에게 맡길 수 있습니다."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        # 후보 리스트
+        lst = QListWidget()
+        for _, row in candidates_df.iterrows():
+            cid = str(row["category_id"])
+            path = str(row["category_path"])
+            text = f"[{cid}] {path}"
+            item = QListWidgetItem(text)
+            # 나중에 꺼내 쓰기 위해 데이터 저장
+            item.setData(Qt.ItemDataRole.UserRole, {"category_id": cid, "category_path": path})
+            lst.addItem(item)
+        layout.addWidget(lst)
+
+        # 버튼들
+        btn_row = QHBoxLayout()
+        btn_ok = QPushButton("선택")
+        btn_llm = QPushButton("LLM에게 맡기기")
+        btn_cancel = QPushButton("취소")
+
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_llm)
+        btn_row.addWidget(btn_cancel)
+        layout.addLayout(btn_row)
+
+        # 선택 결과를 담을 클로저 변수
+        result = {"mode": None, "data": None}
+
+        def on_ok():
+            item = lst.currentItem()
+            if not item:
+                self._log("ℹ️ 카테고리를 선택하지 않았습니다.")
+                return
+            result["mode"] = "manual"
+            result["data"] = item.data(Qt.ItemDataRole.UserRole)
+            dlg.accept()
+
+        def on_llm():
+            result["mode"] = "llm"
+            dlg.accept()
+
+        def on_cancel():
+            result["mode"] = "llm"   # 취소도 일단 LLM에게 넘기는 쪽으로 처리
+            dlg.reject()
+
+        btn_ok.clicked.connect(on_ok)
+        btn_llm.clicked.connect(on_llm)
+        btn_cancel.clicked.connect(on_cancel)
+
+        dlg.exec()
+
+        if result["mode"] == "manual" and result["data"]:
+            cid = result["data"]["category_id"]
+            cpath = result["data"]["category_path"]
+            self._log(f"✅ 수동으로 카테고리 선택: [{cid}] {cpath}")
+
+            # 🔹 strong_name_rules 후보 키워드 계산
+            kw_candidates = _extract_keywords(product_name, brand=None, extra=None)
+            # 너무 짧은 거, 숫자 위주인 거 등은 한 번 더 걸러주기
+            strong_ks = []
+            for kw in kw_candidates:
+                kw_strip = kw.strip()
+                if len(kw_strip) < 2:
+                    continue
+                # 숫자만인 경우 제외
+                if kw_strip.isdigit():
+                    continue
+                strong_ks.append(kw_strip)
+
+            if strong_ks:
+                self._log("💡 이 상품을 기반으로 strong_name_rules 후보 키워드:")
+                for k in strong_ks:
+                    self._log(f'   - "{k}": "{cid}"')
+
+                self._log(
+                    "👉 meta_kitchen_*** 에 strong_name_rules 로 추가하려면, "
+                    "위 키워드들 중에서 골라 JSON 에 아래 형태로 넣어 주세요.\n"
+                    f'   \"strong_name_rules\": {{\n'
+                    + "\n".join([f'      \"{k}\": \"{cid}\",' for k in strong_ks])
+                    + "\n   }"
+                )
+
+            return {
+                "category_id": cid,
+                "category_path": cpath,
+                "reason": "사용자가 UI에서 수동으로 선택했습니다.",
+            }
+
+        # None 리턴 → CategoryMatcher 에서 LLM 단계로 진행
+        self._log("ℹ️ 수동 선택 없음 → LLM에게 맡깁니다.")
+        return None

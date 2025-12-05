@@ -35,7 +35,10 @@ class CategoryMatcher:
         self,
         group: str = "kitchen",
         logger: Optional[Callable[[str], None]] = None,
-    ) -> None:
+        manual_resolver: Optional[
+            Callable[[str, str, pd.DataFrame], Optional[Dict[str, Any]]]
+        ] = None,
+    ) -> None:   
         """
         Parameters
         ----------
@@ -48,6 +51,9 @@ class CategoryMatcher:
 
         # UI에서 넘겨주는 logger (예: ChromeCrawler._log)
         self._logger = logger
+        
+        # 수동 해결기 (디버깅/테스트용)
+        self._manual_resolver = manual_resolver
 
         # 1) 쿠팡 전체 카테고리 마스터 (엑셀 → pkl)
         self.cat_master: pd.DataFrame = load_category_master()
@@ -228,38 +234,18 @@ class CategoryMatcher:
             self._log(f"  🔚 LLM 결과 수신 (candidate_ids 없음): {llm_result}")
             return llm_result
 
-        # 쿠팡 카테고리 마스터에서 해당 ID 들만 필터링
+        # 쿠팡 카테고리 마스터에서 후보 필터링
         candidates_df = self.cat_master[
             self.cat_master["category_id"].astype(str).isin([str(cid) for cid in candidate_ids])
         ]
         self._log(f"  ▶ 후보 cat_master 필터링 완료: {len(candidates_df)}개 행")
 
-        # ✅ 1차: leaf(마지막 뎁스) 완전 일치 룰 시도
+        # 1차: leaf 완전 일치 룰
         leaf_result = self._pick_by_leaf_keyword(
             product_name=product_name,
             candidates_df=candidates_df,
         )
-
-        if strong_result is not None:
-            result = {
-                "category_id": strong_result["category_id"],
-                "category_path": strong_result["category_path"],
-                "reason": strong_result["reason"],
-                "used_llm": False,
-                "meta_key": meta_key,
-                "num_candidates": len(candidates_df),
-            }
-            self._log(f"  🔚 강제 name 룰 결과 사용 (LLM 미호출): {result}")
-            return result
-
-        # ✅ 2차: leaf(마지막 뎁스) 완전 일치 룰 시도
-        leaf_result = self._pick_by_leaf_keyword(
-            product_name=product_name,
-            candidates_df=candidates_df,
-        )
-        
         if leaf_result is not None:
-            # 1차 룰로 이미 확정된 경우 → LLM은 부르지 않음
             result = {
                 "category_id": leaf_result["category_id"],
                 "category_path": leaf_result["category_path"],
@@ -271,7 +257,7 @@ class CategoryMatcher:
             self._log(f"  🔚 1차 leaf 룰 결과 사용 (LLM 미호출): {result}")
             return result
 
-        # ✅ 3차: 후보가 1개뿐이면 → 룰만으로 결정 (LLM 미사용)
+        # 2차: 후보가 1개면 그냥 확정
         if len(candidates_df) == 1:
             row = candidates_df.iloc[0]
             result = {
@@ -285,17 +271,31 @@ class CategoryMatcher:
             self._log(f"  🔚 단일 후보 자동 선택 (LLM 미호출): {result}")
             return result
 
-        # ✅ 4차: 그 외(후보 2개 이상이고 leaf 룰도 실패) → 제한된 후보만 LLM에 전달
-        self._log(f"  ▶ 후보 {len(candidates_df)}개 → 제한된 후보만 LLM에 전달")
+        # 🔹 3차: 후보가 2개 이상 → 먼저 사람에게 물어보기
+        if self._manual_resolver is not None and not candidates_df.empty:
+            self._log("  ▶ 수동 카테고리 선택 콜백 호출 (LLM 이전 단계)")
+            manual = self._manual_resolver(
+                product_name,
+                source_category_path,
+                candidates_df,
+            )
+            if manual is not None:
+                # manual 예: {"category_id":"80298", "category_path":"주방용품>...>웍", "reason":"사용자 수동 선택"}
+                manual.setdefault("used_llm", False)
+                manual.setdefault("meta_key", meta_key)
+                manual.setdefault("num_candidates", len(candidates_df))
+                self._log(f"  🔚 수동 선택 결과 사용 (LLM 미호출): {manual}")
+                return manual
+            self._log("  ▶ 수동 선택 없음 또는 'LLM에게 맡기기' 선택 → LLM 진행")
 
+        # 🔹 4차: 그래도 결정 안되면 LLM에게
+        self._log(f"  ▶ 후보 {len(candidates_df)}개 → 제한된 후보만 LLM에 전달")
         llm_raw = suggest_category_with_candidates(
             product_name=product_name,
-            brand=brand,                     # 필요하면 brand 그대로 넘김
-            extra_text=source_category_path, # ✅ 여기가 source_path가 아니라 source_category_path
+            brand=brand,
+            extra_text=source_category_path,
             candidates_df=candidates_df,
         )
-
-        # CategoryMatcher 스타일에 맞게 공통 필드 보정
         llm_raw.update(
             {
                 "used_llm": True,
@@ -303,9 +303,9 @@ class CategoryMatcher:
                 "num_candidates": len(candidates_df),
             }
         )
-
         self._log(f"  🔚 LLM 결과 수신 (제한 후보): {llm_raw}")
         return llm_raw
+
 
 
     
