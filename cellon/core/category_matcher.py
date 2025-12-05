@@ -192,9 +192,70 @@ class CategoryMatcher:
         
         meta_key = self._infer_meta_key(source, source_category_path, product_name)
 
-        # --- 1차 룰 매칭 실패: meta_key 자체가 없으면 → 전체 LLM 검색 ---
+        # --- 1차 룰 매칭 실패: meta_key 자체가 없어도 strong_name_rule 물어보기 ---
         if meta_key is None:
-            self._log("  ▶ meta_key=None → 1차 룰 매칭 실패 → 전체 cat_master LLM 검색 모드")
+            self._log("  ▶ meta_key=None → 1차 룰 매칭 실패")
+
+            # 0) strong_name_rules 대상 카테고리만 후보로 구성
+            strong_rules = self.coupang_rules.get("__strong_name_rules__", []) or []
+            strong_ids = {
+                str(rule.get("target_category_id"))
+                for rule in strong_rules
+                if rule.get("target_category_id")
+            }
+
+            strong_candidates_df = self.cat_master[
+                self.cat_master["category_id"].astype(str).isin(strong_ids)
+            ]
+            self._log(f"  ▶ strong_name_rules 기반 후보 수: {len(strong_candidates_df)}")
+
+            # 0-1) strong_name_rules 매칭 시도
+            strong_result = self._pick_by_strong_keyword(
+                product_name=product_name,
+                candidates_df=strong_candidates_df,
+            )
+            if strong_result is not None:
+                strong_result.update(
+                    {
+                        "used_llm": False,
+                        "meta_key": None,
+                        "num_candidates": len(strong_candidates_df),
+                    }
+                )
+                self._log(
+                    f"  🔚 strong_name_rules 결과 사용 "
+                    f"(meta_key=None, LLM 미호출): {strong_result}"
+                )
+                return strong_result
+
+            # ✅ 0-2) strong 후보들에 대해 수동 선택 기회 제공
+            if (
+                self._manual_resolver is not None
+                and strong_candidates_df is not None
+                and not strong_candidates_df.empty
+            ):
+                self._log("  ▶ strong 후보들에 대해 수동 카테고리 선택 요청 (meta_key=None)")
+                manual = self._manual_resolver(
+                    product_name,
+                    source_category_path,
+                    strong_candidates_df,
+                )
+                if manual is not None:
+                    manual.setdefault("used_llm", False)
+                    manual.setdefault("meta_key", None)
+                    manual.setdefault("num_candidates", len(strong_candidates_df))
+                    self._log(
+                        f"  🔚 수동 선택 결과 사용 "
+                        f"(meta_key=None, LLM 미호출): {manual}"
+                    )
+                    return manual
+                self._log(
+                    "  ▶ 수동 선택 없음 또는 "
+                    "'LLM에게 맡기기' 선택 → 전체 LLM 진행"
+                )
+
+            # (원래 있던 전체 LLM 호출은 이 아래로 내려감)
+            self._log("  ▶ strong_name_rules/수동 선택 실패 → 전체 cat_master LLM 검색 모드")
             self._log(f"    - 전체 카테고리 수: {len(self.cat_master)}")
 
             llm_result = suggest_category_with_candidates(
@@ -203,13 +264,13 @@ class CategoryMatcher:
                 extra_text=extra_text,
                 candidates_df=None,
             )
-            # LLM 호출임을 표기
             llm_result.setdefault("used_llm", True)
             llm_result.setdefault("meta_key", None)
             llm_result.setdefault("num_candidates", None)
 
             self._log(f"  🔚 LLM 결과 수신 (meta_key=None): {llm_result}")
             return llm_result
+
 
         self._log(f"  ▶ meta_key 추론 성공: {meta_key}")
         coupang_rule = self.coupang_rules.get(meta_key, {})
@@ -239,6 +300,23 @@ class CategoryMatcher:
             self.cat_master["category_id"].astype(str).isin([str(cid) for cid in candidate_ids])
         ]
         self._log(f"  ▶ 후보 cat_master 필터링 완료: {len(candidates_df)}개 행")
+
+        # ✅ 0단계: strong_name_rules 먼저 시도
+        strong_result = self._pick_by_strong_keyword(
+            product_name=product_name,
+            candidates_df=candidates_df,
+        )
+        if strong_result is not None:
+            strong_result.update(
+                {
+                    "used_llm": False,
+                    "meta_key": meta_key,
+                    "num_candidates": len(candidates_df),
+                }
+            )
+            self._log(f"  🔚 strong_name_rules 결과 사용 (LLM 미호출): {strong_result}")
+            return strong_result
+
 
         # 1차: leaf 완전 일치 룰
         leaf_result = self._pick_by_leaf_keyword(
@@ -444,6 +522,7 @@ class CategoryMatcher:
 
         return None
     
+    # --------- ----- 내부 헬퍼: 강제 name 룰 매칭 ---------
     def _pick_by_strong_keyword(
         self,
         product_name: str,

@@ -21,7 +21,8 @@ from pathlib import Path
 # ==== PyQt6 ====
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel, QTextEdit, QHBoxLayout, QSpinBox
+    QWidget, QVBoxLayout, QPushButton, QLabel, QTextEdit, QHBoxLayout, QSpinBox,
+    QDialog, QListWidget, QListWidgetItem
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
@@ -59,6 +60,8 @@ from google.oauth2.service_account import Credentials
 # 카테고리 매칭 모듈
 from .core.category_matcher import CategoryMatcher
 
+# category_ai – 키워드 추출 모듈
+from .category_ai.category_llm import _extract_keywords
 
 # 시트/쿠팡 API: 분리된 모듈
 from .sheets_client import (
