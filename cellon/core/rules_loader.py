@@ -201,19 +201,95 @@ def load_meta_rules(group: str) -> Dict[str, Any]:
         return {}
     return data
 
-
+# ----- 3-1. coupang 룰 업데이트 헬퍼 -----
 @lru_cache(maxsize=None)
 def load_coupang_rules(group: str) -> Dict[str, Any]:
-    """
-    특정 group에 대한 coupang 룰 로딩.
-
-    - group="kitchen"  → coupang/kitchen_rules.json
-    - group="food"     → coupang/food_rules.json
+    """ 특정 group에 대한 coupang 룰 로딩.
+    - group="kitchen" → coupang/kitchen_rules.json
+    - group="food"    → coupang/food_rules.json
     """
     path = COUPANG_DIR / f"{group}_rules.json"
     data = _load_json(path)
     if not isinstance(data, dict):
         return {}
+    return data
+
+
+def upsert_strong_name_rule(
+    group: str,
+    target_category_id: str | int,
+    keywords: list[str],
+    reason: str | None = None,
+) -> dict:
+    """
+    - rules/coupang/{group}_rules.json 의 __strong_name_rules__ 를 업데이트.
+    - 같은 category_id 에 대해서는 기존 rule 의 keywords 에만 합쳐 넣고 중복 제거.
+    - 파일이 없으면 새로 생성.
+    - 업데이트 후 load_coupang_rules 캐시를 비운다.
+    """
+    target_id_str = str(target_category_id).strip()
+    # 키워드 정리
+    cleaned: list[str] = []
+    for kw in (keywords or []):
+        kw = (kw or "").strip()
+        if not kw:
+            continue
+        if kw not in cleaned:
+            cleaned.append(kw)
+
+    if not cleaned:
+        # 넣을 키워드가 없으면 아무 것도 하지 않음
+        return {}
+
+    path = COUPANG_DIR / f"{group}_rules.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = _load_json(path)
+    if not isinstance(data, dict):
+        data = {}
+
+    rules_list = data.get("__strong_name_rules__", [])
+    if not isinstance(rules_list, list):
+        rules_list = []
+
+    # 동일 category_id rule 찾기
+    existing = None
+    for rule in rules_list:
+        if str(rule.get("target_category_id")) == target_id_str:
+            existing = rule
+            break
+
+    if existing is not None:
+        # 기존 keywords 에 합쳐 넣고 중복 제거
+        existing_kw = [
+            (str(k) or "").strip()
+            for k in (existing.get("keywords") or [])
+            if (str(k) or "").strip()
+        ]
+        for kw in cleaned:
+            if kw not in existing_kw:
+                existing_kw.append(kw)
+        existing["keywords"] = existing_kw
+        if reason:
+            existing["reason"] = reason
+    else:
+        new_rule = {
+            "keywords": cleaned,
+            "target_category_id": target_id_str,
+        }
+        if reason:
+            new_rule["reason"] = reason
+        rules_list.append(new_rule)
+
+    data["__strong_name_rules__"] = rules_list
+
+    # JSON 저장
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # 캐시 무효화 (다음부터는 새 JSON 사용)
+    load_coupang_rules.cache_clear()
+
     return data
 
 

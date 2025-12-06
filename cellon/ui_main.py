@@ -59,6 +59,8 @@ from google.oauth2.service_account import Credentials
 
 # 카테고리 매칭 모듈
 from .core.category_matcher import CategoryMatcher
+from .core.rules_loader import COUPANG_DIR, load_coupang_rules
+from .core.rules_loader import upsert_strong_name_rule
 
 # category_ai – 키워드 추출 모듈
 from .category_ai.category_llm import _extract_keywords
@@ -2563,15 +2565,16 @@ class ChromeCrawler(QWidget):
         - 후보 카테고리를 UI로 보여주고
         - 사용자가 하나를 고르면 dict를 리턴
         - 'LLM에게 맡기기'를 누르면 None 리턴
+        + 사용자가 선택한 카테고리를 기준으로 strong_name_rules 를 실제 JSON에 저장
         """
         if candidates_df is None or candidates_df.empty:
             return None
 
+        # 1차: 카테고리 선택 다이얼로그
         dlg = QDialog(self)
         dlg.setWindowTitle("카테고리 수동 선택")
         layout = QVBoxLayout(dlg)
 
-        # 상단 설명
         info = QLabel(
             f"상품명: {product_name}\n"
             f"원본 카테고리: {source_category_path}\n\n"
@@ -2580,19 +2583,16 @@ class ChromeCrawler(QWidget):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        # 후보 리스트
         lst = QListWidget()
         for _, row in candidates_df.iterrows():
             cid = str(row["category_id"])
             path = str(row["category_path"])
             text = f"[{cid}] {path}"
             item = QListWidgetItem(text)
-            # 나중에 꺼내 쓰기 위해 데이터 저장
             item.setData(Qt.ItemDataRole.UserRole, {"category_id": cid, "category_path": path})
             lst.addItem(item)
         layout.addWidget(lst)
 
-        # 버튼들
         btn_row = QHBoxLayout()
         btn_ok = QPushButton("선택")
         btn_llm = QPushButton("LLM에게 맡기기")
@@ -2603,7 +2603,6 @@ class ChromeCrawler(QWidget):
         btn_row.addWidget(btn_cancel)
         layout.addLayout(btn_row)
 
-        # 선택 결과를 담을 클로저 변수
         result = {"mode": None, "data": None}
 
         def on_ok():
@@ -2620,7 +2619,7 @@ class ChromeCrawler(QWidget):
             dlg.accept()
 
         def on_cancel():
-            result["mode"] = "llm"   # 취소도 일단 LLM에게 넘기는 쪽으로 처리
+            result["mode"] = "llm"   # 취소도 LLM에게 넘기는 쪽으로 처리
             dlg.reject()
 
         btn_ok.clicked.connect(on_ok)
@@ -2629,43 +2628,264 @@ class ChromeCrawler(QWidget):
 
         dlg.exec()
 
-        if result["mode"] == "manual" and result["data"]:
-            cid = result["data"]["category_id"]
-            cpath = result["data"]["category_path"]
-            self._log(f"✅ 수동으로 카테고리 선택: [{cid}] {cpath}")
+        # LLM 에게 넘기는 경우: 기존과 동일하게 None 리턴
+        if result["mode"] != "manual" or not result["data"]:
+            self._log("ℹ️ 수동 선택 없음 → LLM에게 맡깁니다.")
+            return None
 
-            # 🔹 strong_name_rules 후보 키워드 계산
-            kw_candidates = _extract_keywords(product_name, brand=None, extra=None)
-            # 너무 짧은 거, 숫자 위주인 거 등은 한 번 더 걸러주기
-            strong_ks = []
-            for kw in kw_candidates:
-                kw_strip = kw.strip()
-                if len(kw_strip) < 2:
-                    continue
-                # 숫자만인 경우 제외
-                if kw_strip.isdigit():
-                    continue
+        # 여기부터는 사용자가 카테고리를 직접 선택한 경우
+        cid = result["data"]["category_id"]
+        cpath = result["data"]["category_path"]
+        self._log(f"✅ 수동으로 카테고리 선택: [{cid}] {cpath}")
+
+        # 🔹 strong_name_rules 후보 키워드 계산
+        kw_candidates = _extract_keywords(product_name, brand=None, extra=None)
+
+        strong_ks: list[str] = []
+        for kw in kw_candidates:
+            kw_strip = (kw or "").strip()
+            if len(kw_strip) < 2:
+                continue
+            if kw_strip.isdigit():
+                continue
+            if kw_strip not in strong_ks:
                 strong_ks.append(kw_strip)
 
-            if strong_ks:
-                self._log("💡 이 상품을 기반으로 strong_name_rules 후보 키워드:")
-                for k in strong_ks:
-                    self._log(f'   - "{k}": "{cid}"')
+        if strong_ks:
+            # 2차: strong_name_rules 에 넣을 키워드 multi-select 다이얼로그
+            selected_kw = self._ask_keywords_for_strong_rule(strong_ks)
+
+            if selected_kw:
+                # group 은 kitchen/food/beauty 등 → CategoryMatcher 에서 이미 보관 중
+                group = getattr(self.cat_matcher, "group", "kitchen")
+
+                reason = f"사용자 수동 선택 기반 강제 룰 (source={source_category_path}, name={product_name})"
+
+                upsert_strong_name_rule(
+                    group=group,
+                    target_category_id=cid,
+                    keywords=selected_kw,
+                    reason=reason,
+                )
+                
+                # upsert_strong_name_rule 호출 뒤에 캐시 갱신
+                self.cat_matcher.coupang_rules = load_coupang_rules(group)
+
+
+                self._log("💾 strong_name_rules JSON 업데이트 완료:")
+                for k in selected_kw:
+                    self._log(f'   - "{k}" → category_id={cid}')
 
                 self._log(
-                    "👉 meta_kitchen_*** 에 strong_name_rules 로 추가하려면, "
-                    "위 키워드들 중에서 골라 JSON 에 아래 형태로 넣어 주세요.\n"
-                    f'   \"strong_name_rules\": {{\n'
-                    + "\n".join([f'      \"{k}\": \"{cid}\",' for k in strong_ks])
-                    + "\n   }"
+                    "👉 이후부터 이 키워드들은 "
+                    f"'{group}_rules.json' 의 __strong_name_rules__ 를 통해 "
+                    "해당 카테고리로 강제 매칭됩니다. "
+                    "(프로그램 재시작 후 확실하게 반영됩니다.)"
+                )
+            else:
+                self._log("ℹ️ strong_name_rules 에 추가할 키워드를 선택하지 않았습니다.")
+        else:
+            self._log("ℹ️ 이 상품에서 strong_name_rules 로 쓸만한 키워드를 찾지 못했습니다.")
+
+        # CategoryMatcher 가 요구하는 반환 형식 유지
+        return {
+            "category_id": cid,
+            "category_path": cpath,
+            "reason": "사용자가 UI에서 수동으로 선택했습니다.",
+        }
+
+        
+    # === strong_name_rules용 키워드 선택 다이얼로그 ===
+    def _pick_strong_keyword_for_rule(self, keywords: list[str]) -> Optional[str]:
+        """
+        strong_name_rules 에 넣을 키워드를 하나 고르게 하는 간단한 다이얼로그.
+        - 반환값: 선택된 키워드 (없으면 None)
+        """
+        if not keywords:
+            return None
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("strong_name_rules 키워드 선택")
+
+        layout = QVBoxLayout(dlg)
+
+        info = QLabel(
+            "이 상품명에서 추출한 키워드 중\n"
+            "strong_name_rules 에 추가할 대표 키워드를 하나 선택해 주세요."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        lst = QListWidget()
+        for kw in keywords:
+            if not kw.strip():
+                continue
+            item = QListWidgetItem(kw.strip())
+            lst.addItem(item)
+        layout.addWidget(lst)
+
+        btn_row = QHBoxLayout()
+        btn_ok = QPushButton("이 키워드로 추가")
+        btn_skip = QPushButton("rules에 추가 안 함")
+
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_skip)
+        layout.addLayout(btn_row)
+
+        result = {"keyword": None}
+
+        def on_ok():
+            item = lst.currentItem()
+            if not item:
+                self._log("ℹ️ strong_name_rules: 선택된 키워드가 없습니다.")
+                return
+            result["keyword"] = item.text().strip()
+            dlg.accept()
+
+        def on_skip():
+            result["keyword"] = None
+            dlg.accept()
+
+        btn_ok.clicked.connect(on_ok)
+        btn_skip.clicked.connect(on_skip)
+
+        dlg.exec()
+
+        return result["keyword"] or None
+
+    def _ask_keywords_for_strong_rule(self, candidates: list[str]) -> list[str]:
+        """
+        strong_name_rules 에 넣을 키워드를 multi-select 로 선택하게 하는 다이얼로그.
+        """
+        if not candidates:
+            return []
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("강제 카테고리용 키워드 선택")
+
+        layout = QVBoxLayout(dlg)
+
+        info = QLabel(
+            "이 상품을 이 카테고리로 강제 매칭할 때 사용할 키워드를 선택해 주세요.\n"
+            "여러 개 선택 가능 (Ctrl/Shift 클릭 또는 드래그)."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        lst = QListWidget()
+        lst.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+
+        for kw in candidates:
+            item = QListWidgetItem(kw)
+            lst.addItem(item)
+
+        layout.addWidget(lst)
+
+        btn_row = QHBoxLayout()
+        btn_ok = QPushButton("선택 완료")
+        btn_cancel = QPushButton("건너뛰기")
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_cancel)
+        layout.addLayout(btn_row)
+
+        selected: list[str] = []
+
+        def on_ok():
+            nonlocal selected
+            items = lst.selectedItems()
+            selected = [
+                (it.text() or "").strip()
+                for it in items
+                if (it.text() or "").strip()
+            ]
+            dlg.accept()
+
+        def on_cancel():
+            dlg.reject()
+
+        btn_ok.clicked.connect(on_ok)
+        btn_cancel.clicked.connect(on_cancel)
+
+        dlg.exec()
+
+        return selected
+
+
+    # === strong_name_rules JSON에 실제로 추가 + 캐시 갱신 ===
+    def _append_strong_name_rule(
+        self,
+        keyword: str,
+        target_category_id: str,
+        reason: str,
+    ) -> None:
+        """
+        rules/coupang/<group>_rules.json 의 __strong_name_rules__ 에
+        { "keywords": [keyword], "target_category_id": ..., "reason": ... } 를 append.
+        그리고 load_coupang_rules 캐시를 비우고 self.cat_matcher.coupang_rules 를 갱신.
+        """
+        try:
+            # 현재 사용 중인 group 에 맞는 rules 파일 찾기 (예: kitchen_rules.json)
+            group = getattr(self.cat_matcher, "group", "kitchen")
+            rules_path = COUPANG_DIR / f"{group}_rules.json"
+
+            if not rules_path.exists():
+                self._log(f"⚠️ strong_name_rules 추가 실패: rules 파일이 없습니다 → {rules_path}")
+                return
+
+            # 1) 기존 JSON 읽기
+            with open(rules_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            rules_list = data.get("__strong_name_rules__", [])
+            if not isinstance(rules_list, list):
+                rules_list = []
+                data["__strong_name_rules__"] = rules_list
+
+            # 2) 이미 같은 (keyword, target_category_id) 조합이 있으면 중복 추가 방지
+            try:
+                target_id_int = int(target_category_id)
+            except Exception:
+                target_id_int = target_category_id  # 혹시 모를 문자열 형태도 허용
+
+            for r in rules_list:
+                kws = r.get("keywords") or []
+                tid = r.get("target_category_id")
+                try:
+                    tid_int = int(tid)
+                except Exception:
+                    tid_int = tid
+                if keyword in kws and tid_int == target_id_int:
+                    self._log(
+                        f"ℹ️ strong_name_rules: 이미 존재하는 규칙입니다 "
+                        f"(keyword='{keyword}', target_category_id={target_category_id})"
+                    )
+                    break
+            else:
+                # 3) 새 규칙 append
+                new_rule = {
+                    "keywords": [keyword],
+                    "target_category_id": target_id_int,
+                    "reason": reason,
+                }
+                rules_list.append(new_rule)
+
+                # 4) JSON 다시 쓰기
+                with open(rules_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+                self._log(
+                    f"💾 strong_name_rules 에 규칙 추가 완료: "
+                    f"keyword='{keyword}', target_category_id={target_category_id}"
                 )
 
-            return {
-                "category_id": cid,
-                "category_path": cpath,
-                "reason": "사용자가 UI에서 수동으로 선택했습니다.",
-            }
+                # 5) in-memory 캐시 갱신
+                try:
+                    load_coupang_rules.cache_clear()
+                    self.cat_matcher.coupang_rules = load_coupang_rules(group)
+                    self._log("🔄 CategoryMatcher.coupang_rules 캐시를 갱신했습니다.")
+                except Exception as e:
+                    self._log(f"⚠️ strong_name_rules 캐시 갱신 중 오류: {e}")
 
-        # None 리턴 → CategoryMatcher 에서 LLM 단계로 진행
-        self._log("ℹ️ 수동 선택 없음 → LLM에게 맡깁니다.")
-        return None
+        except Exception as e:
+            self._log(f"❌ strong_name_rules JSON 업데이트 중 예외 발생: {e}")
+
