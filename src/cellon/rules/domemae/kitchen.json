@@ -1,0 +1,105 @@
+{
+  "__comment": {
+    "description": "도매매 주방용품 카테고리 규칙 (한글:영어 용어 매핑 포함)",
+    "terms": {
+      "교자상/밥상": "Dining Low Table",
+      "식기": "Tableware",
+      "제수용품": "Ceremonial / Ancestral Items",
+      "주전자/티포트": "Kettle / Teapot",
+      "냄비/솥": "Pot & Stew Pot",
+      "와인용품": "Wine Accessories",
+      "조리기구": "Cooking Tools",
+      "칼/커팅기구": "Knife & Cutting Tools",
+      "도마": "Cutting Board",
+      "잔/컵": "Cups & Glasses",
+      "주방수납용품": "Kitchen Storage",
+      "커피용품": "Coffee Tools",
+      "보관/밀폐용기": "Food Storage Containers",
+      "제과/제빵용품": "Baking Supplies",
+      "주방잡화": "Kitchen Miscellaneous",
+      "프라이팬": "Frying Pan"
+    }
+  },
+  "categories": [
+    {
+      "name": "교자상/밥상",
+      "eng": "Dining Low Table",
+      "children": []
+    },
+    {
+      "name": "식기",
+      "eng": "Tableware",
+      "children": []
+    },
+    {
+      "name": "제수용품",
+      "eng": "Ceremonial / Ancestral Items",
+      "children": []
+    },
+    {
+      "name": "주전자/티포트",
+      "eng": "Kettle / Teapot",
+      "children": []
+    },
+    {
+      "name": "냄비/솥",
+      "eng": "Pot & Stew Pot",
+      "children": []
+    },
+    {
+      "name": "와인용품",
+      "eng": "Wine Accessories",
+      "children": []
+    },
+    {
+      "name": "조리기구",
+      "eng": "Cooking Tools",
+      "children": []
+    },
+    {
+      "name": "칼/커팅기구",
+      "eng": "Knife & Cutting Tools",
+      "children": []
+    },
+    {
+      "name": "도마",
+      "eng": "Cutting Board",
+      "children": []
+    },
+    {
+      "name": "잔/컵",
+      "eng": "Cups & Glasses",
+      "children": []
+    },
+    {
+      "name": "주방수납용품",
+      "eng": "Kitchen Storage",
+      "children": []
+    },
+    {
+      "name": "커피용품",
+      "eng": "Coffee Tools",
+      "children": []
+    },
+    {
+      "name": "보관/밀폐용기",
+      "eng": "Food Storage Containers",
+      "children": []
+    },
+    {
+      "name": "제과/제빵용품",
+      "eng": "Baking Supplies",
+      "children": []
+    },
+    {
+      "name": "주방잡화",
+      "eng": "Kitchen Miscellaneous",
+      "children": []
+    },
+    {
+      "name": "프라이팬",
+      "eng": "Frying Pan",
+      "children": []
+    }
+  ]
+}

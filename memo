@@ -1,0 +1,135 @@
+import sys
+import asyncio
+import pandas as pd
+import PyQt6
+import time
+from PyQt6 import QtCore, QtWidgets
+from playwright.async_api import async_playwright
+from playwright.sync_api import sync_playwright
+import requests
+from io import BytesIO
+from PIL import Image
+
+class CrawlerApp(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("상품 크롤러")
+        self.setGeometry(100, 100, 800, 600)
+
+        # PyQt6 UI 구성
+        self.layout = QtWidgets.QVBoxLayout()
+
+        self.keyword_input = QtWidgets.QLineEdit(self)
+        self.keyword_input.setPlaceholderText("검색할 키워드 입력")
+        self.layout.addWidget(self.keyword_input)
+
+        self.start_button = QtWidgets.QPushButton("크롤링 시작", self)
+        self.start_button.clicked.connect(self.start_crawl)
+        self.layout.addWidget(self.start_button)
+
+        self.result_table = QtWidgets.QTableWidget(self)
+        self.result_table.setColumnCount(9)
+        self.result_table.setHorizontalHeaderLabels(["이름", "가격", "판매처수", "옵션", "별점", "리뷰 수", "등록일", "썸네일", "배송비"])
+        self.layout.addWidget(self.result_table)
+
+        self.export_button = QtWidgets.QPushButton("엑셀로 내보내기", self)
+        self.export_button.clicked.connect(self.export_to_excel)
+        self.layout.addWidget(self.export_button)
+
+        self.setLayout(self.layout)
+
+    def start_crawl(self):
+        keyword = self.keyword_input.text()
+        if keyword:
+            self.crawl_data(keyword)
+            time.sleep(30)
+        else:
+            QtWidgets.QMessageBox.warning(self, "경고", "키워드를 입력하세요.")
+            time.sleep(30)
+
+    def crawl_data(self, keyword):
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(self.perform_crawl(keyword))
+
+    async def perform_crawl(self, keyword):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=False)
+            page = await browser.new_page()
+
+            # 검색 URL로 이동
+            await page.goto(f"https://search.shopping.naver.com/ns/search?query={keyword}")
+            time.sleep(30)
+
+            # Lazy Loading을 위한 스크롤 처리
+            for _ in range(10):  # 10번 스크롤 (필요시 조정)
+                await page.evaluate("window.scrollBy(0, window.innerHeight);")
+                await page.wait_for_timeout(1000)  # 스크롤 후 1초 대기
+
+            # 상품 정보 크롤링
+            products = await page.query_selector_all("div._itemSection")  # 상품 리스트 영역을 잡음
+
+            product_data = []
+            for product in products:
+                try:
+                    name = await product.query_selector("a._productLink").inner_text()
+                    price = await product.query_selector("span._price").inner_text()
+                    seller_count = await product.query_selector("span._sellerCount").inner_text()
+                    options = await product.query_selector("div._options").inner_text()
+                    rating = await product.query_selector("span._rating").inner_text()
+                    review_count = await product.query_selector("span._reviewCount").inner_text()
+                    date = await product.query_selector("span._date").inner_text()
+                    thumbnail_url = await product.query_selector("img._thumbnail").get_attribute("src")
+                    shipping_cost = await product.query_selector("span._shippingCost").inner_text()
+
+                    # 썸네일 이미지 다운로드
+                    thumbnail_image = await self.download_thumbnail(thumbnail_url)
+
+                    product_data.append([name, price, seller_count, options, rating, review_count, date, thumbnail_image, shipping_cost])
+
+                except Exception as e:
+                    print(f"Error occurred while scraping product: {e}")
+                    continue  # 오류 발생 시 해당 상품은 건너뜀
+
+            # PyQt 테이블에 결과 출력
+            self.display_results(product_data)
+
+            await browser.close()
+
+    def download_thumbnail(self, url):
+        response = requests.get(url)
+        img = Image.open(BytesIO(response.content))
+
+        filename = url.split("/")[-1]
+        img.save(f"thumbnails/{filename}")
+        return filename
+
+    def display_results(self, data):
+        self.result_table.setRowCount(len(data))
+        for i, row in enumerate(data):
+            for j, val in enumerate(row):
+                self.result_table.setItem(i, j, QtWidgets.QTableWidgetItem(str(val)))
+
+    def export_to_excel(self):
+        row_count = self.result_table.rowCount()
+        column_count = self.result_table.columnCount()
+
+        data = []
+        for row in range(row_count):
+            row_data = []
+            for col in range(column_count):
+                item = self.result_table.item(row, col)
+                row_data.append(item.text() if item else "")
+            data.append(row_data)
+
+        df = pd.DataFrame(data, columns=["이름", "가격", "판매처수", "옵션", "별점", "리뷰 수", "등록일", "썸네일", "배송비"])
+        df.to_excel("products.xlsx", index=False)
+        QtWidgets.QMessageBox.information(self, "완료", "엑셀 파일로 내보내기 완료!")
+
+if __name__ == '__main__':
+    app = QtWidgets.QApplication(sys.argv)
+    window = CrawlerApp()
+    window.show()
+    sys.exit(app.exec())
+
+
+

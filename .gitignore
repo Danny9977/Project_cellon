@@ -1,0 +1,40 @@
+# 가상환경
+.venv/
+venv/
+env/
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VSCode 설정 (원하면 제외)
+.vscode/
+
+# 크롤링 임시 데이터 / 이미지
+crawling_temp/
+assets/
+image/
+thumbnails/
+*.png
+*.jpg
+*.jpeg
+
+# OS / 기타
+.DS_Store
+.idea/
+
+# 키 제외 규칙
+api/google_api/*.json
+api/google_api/원본/*
+api/google_api/원본/*.json
+# 셀러툴 파일 등 민감 파일
+*key*
+*Key*
+*my-project*
+*service_account*
+*credential*
+api/google_api/
+api/coupang_api/
+api/coupang_api/

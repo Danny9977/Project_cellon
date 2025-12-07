@@ -1,0 +1,82 @@
+{
+  "__comment": {
+    "description": "코스트코 홈/키친 - 주방 관련 카테고리 규칙 (한글:영어 용어 매핑 포함)",
+    "terms": {
+      "조리용품": "Cookware",
+      "식탁용품": "Tableware",
+      "주방잡화": "Kitchen Accessories",
+      "칼/도마": "Knife & Cutting Board",
+      "세탁용품": "Laundry Supplies",
+      "욕실용품": "Bathroom Items",
+      "세제/청소용품": "Cleaning Supplies",
+      "커피/베이킹용품": "Coffee & Baking",
+      "식품 보관백": "Food Storage Bags"
+    }
+  },
+  "categories": [
+    {
+      "name": "조리용품",
+      "eng": "Cookware",
+      "children": [
+        "프라이팬/그릴",
+        "쿡웨어"
+      ]
+    },
+    {
+      "name": "식탁용품",
+      "eng": "Tableware",
+      "children": [
+        "디너웨어",
+        "그릇/식기",
+        "수저/포크/나이프",
+        "컵/머그/물병",
+        "와인잔/맥주잔",
+        "보온/보냉용품",
+        "보관/밀폐용기"
+      ]
+    },
+    {
+      "name": "주방잡화",
+      "eng": "Kitchen Accessories",
+      "children": [
+        "조리도구",
+        "주방수납/정리",
+        "주방 액세서리/용품",
+        "정수기용품",
+        "식품 보관백",
+        "호일/일회용품/기타",
+        "커피/베이킹용품"
+      ]
+    },
+    {
+      "name": "칼/도마",
+      "eng": "Knife & Cutting Board",
+      "children": [
+        "칼/채칼/가위",
+        "도마/서빙보드"
+      ]
+    },
+    {
+      "name": "세탁용품",
+      "eng": "Laundry Supplies",
+      "children": [
+        "빨래 건조대/다리미판",
+        "세탁용 바구니"
+      ]
+    },
+    {
+      "name": "욕실용품",
+      "eng": "Bathroom Items",
+      "children": []
+    },
+    {
+      "name": "세제/청소용품",
+      "eng": "Cleaning Supplies",
+      "children": [
+        "세탁세제",
+        "주방세제",
+        "청소세제"
+      ]
+    }
+  ]
+}

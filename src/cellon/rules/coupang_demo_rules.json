@@ -1,0 +1,55 @@
+[
+  {
+    "rule_id": "coupang_pot_basic",
+    "marketplace": "coupang",
+    "category_id": "123456",
+    "category_path": "주방용품 > 냄비/찜솥 > 양수냄비",
+    "priority": 10,
+    "is_active": true,
+    "notes": "기본 냄비 카테고리",
+
+    "conditions": {
+      "required_keywords": ["냄비"],
+      "optional_keywords": ["양수", "스테인리스"],
+      "forbidden_keywords": ["프라이팬", "후라이팬"],
+
+      "required_tags": [],
+      "forbidden_tags": [],
+
+      "attr_equals": {},
+      "attr_contains": {}
+    },
+
+    "default_fields": {
+      "delivery_type": "ROCKET",
+      "tax_type": "TAX"
+    }
+  },
+
+  {
+    "rule_id": "coupang_pan_basic",
+    "marketplace": "coupang",
+    "category_id": "234567",
+    "category_path": "주방용품 > 프라이팬/후라이팬",
+    "priority": 20,
+    "is_active": true,
+    "notes": "기본 프라이팬 카테고리",
+
+    "conditions": {
+      "required_keywords": ["프라이팬"],
+      "optional_keywords": [],
+      "forbidden_keywords": ["냄비"],
+
+      "required_tags": [],
+      "forbidden_tags": [],
+
+      "attr_equals": {},
+      "attr_contains": {}
+    },
+
+    "default_fields": {
+      "delivery_type": "ROCKET",
+      "tax_type": "TAX"
+    }
+  }
+]
