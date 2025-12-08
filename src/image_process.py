@@ -7,6 +7,9 @@ from typing import Iterable, Set
 from PIL import Image
 from transformers import pipeline, Pipeline
 
+# ----- 설정 임포트 -----
+from cellon.config import CRAWLING_TEMP_IMAGE_DIR, UPLOAD_READY_DIR, SELLERTOOL_XLSM_PATH
+
 
 # ===== BRIA RMBG 파이프라인 =====
 
