@@ -6,11 +6,12 @@ from datetime import datetime
 # =========================
 # 프로젝트 루트/공통 경로
 # =========================
-# 이 파일 경로: Cellon_Project/src/cellon/config.py
-PROJECT_ROOT = Path(__file__).resolve().parents[2]   # -> Cellon_Project
-SRC_DIR      = PROJECT_ROOT / "src"
-CELLON_DIR   = SRC_DIR / "cellon"
-ASSETS_DIR   = PROJECT_ROOT / "assets"
+# config.py 파일 위치: .../Cellon_Project/src/cellon/config.py
+CELLON_PACKAGE_DIR = Path(__file__).resolve().parent          # .../src/cellon
+SRC_DIR = CELLON_PACKAGE_DIR.parent                           # .../src
+PROJECT_ROOT = SRC_DIR.parent                                 # .../Cellon_Project
+
+ASSETS_DIR = PROJECT_ROOT / "assets"
 
 # ====== category_ai 에서 카테고리 엑셀 파일 경로 ==========
 # 예: Cellon_Project/assets/category_excels/주방용품.xlsx ...
@@ -22,13 +23,20 @@ CACHE_DIR = ASSETS_DIR / "cache"
 
 # ====== 크롤링 / 이미지 / 업로드 관련 경로 ======
 # 예: Cellon_Project/assets/temp/crawling_temp/ ...
-CRAWLING_TEMP_DIR        = ASSETS_DIR / "temp" / "crawling_temp"
-CRAWLING_TEMP_IMAGE_DIR  = CRAWLING_TEMP_DIR / "image"
-UPLOAD_READY_DIR         = CRAWLING_TEMP_DIR / "upload_ready"
+CRAWLING_TEMP_DIR = ASSETS_DIR / "crawling_temp"
+CRAWLING_TEMP_IMAGE_DIR = CRAWLING_TEMP_DIR / "image"   # 캡처 이미지
+CRAWLING_TEMP_EXCEL_DIR = CRAWLING_TEMP_DIR / "excel"   # 엑셀 (있다면)
+
+# 업로드용 폴더
+UPLOAD_READY_DIR = CRAWLING_TEMP_DIR / "upload"
+
+# 배경 이미지 (지금 쓰는 1000x1000)
+PRODUCT_BG_IMAGE_PATH = ASSETS_DIR / "image" / "bg" / "product_bg_1000.jpg"
 
 # 코스트코→쿠팡 대량등록용 템플릿 엑셀
 # 실제 파일명이 다르면 이 한 줄만 파일명에 맞게 바꿔주세요.
-SELLERTOOL_XLSM_PATH = CRAWLING_TEMP_DIR / "sellertool_upload.xlsm"
+# 추후 쿠팡 업로드용 매크로 엑셀 (미리 정의만)
+SELLERTOOL_XLSM_PATH = UPLOAD_READY_DIR / "sellertool_upload.xlsm"
 SELLERTOOL_SHEET_NAME = "data"  # 실제 시트 이름
 
 

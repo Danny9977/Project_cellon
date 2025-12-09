@@ -8,7 +8,11 @@ from PIL import Image
 from transformers import pipeline, Pipeline
 
 # ----- 설정 임포트 -----
-from cellon.config import CRAWLING_TEMP_IMAGE_DIR, UPLOAD_READY_DIR, SELLERTOOL_XLSM_PATH
+# 여기 추가
+from cellon.config import (
+    CRAWLING_TEMP_IMAGE_DIR,
+    PRODUCT_BG_IMAGE_PATH,
+)
 
 
 # ===== BRIA RMBG 파이프라인 =====
@@ -102,6 +106,15 @@ def process_captured_folder(
     if not bg_image_path.exists():
         raise FileNotFoundError(f"배경 이미지가 없습니다: {bg_image_path}")
 
+    # 기본값: config에서 가져오기
+    if images_dir is None:
+        images_dir = CRAWLING_TEMP_IMAGE_DIR
+    if bg_image_path is None:
+        bg_image_path = PRODUCT_BG_IMAGE_PATH
+
+    images_dir = Path(images_dir)
+    bg_image_path = Path(bg_image_path)
+    
     print(f"📂 이미지 폴더: {images_dir}")
     print(f"🖼  배경 이미지: {bg_image_path}")
 
@@ -166,25 +179,37 @@ def process_captured_folder(
 
 def main():
     """
-    사용법:
-        python process_captured_bria.py <images_dir> <bg_image_path>
+    사용법 (옵션):
 
-    예:
-        python process_captured_bria.py \
-            "/Users/jeehoonkim/Desktop/상품사진/image_test" \
-            "/Users/jeehoonkim/Desktop/상품사진/bg/product_bg_1000.png"
+        python src/image_process.py              # config 기본 경로 사용
+        python src/image_process.py <images_dir> <bg_image_path>
     """
     import sys
+    from pathlib import Path
+    from cellon.config import (
+        CRAWLING_TEMP_IMAGE_DIR,
+        PRODUCT_BG_IMAGE_PATH,
+    )
 
-    if len(sys.argv) != 3:
-        print("사용법: python process_captured_bria.py <images_dir> <bg_image_path>")
+    if len(sys.argv) == 1:
+        # 인자 없으면 config 기본값 사용
+        images_dir = CRAWLING_TEMP_IMAGE_DIR
+        bg_image_path = PRODUCT_BG_IMAGE_PATH
+        print("[config 기본 경로 사용]")
+        print("  images_dir :", images_dir)
+        print("  bg_image   :", bg_image_path)
+    elif len(sys.argv) == 3:
+        images_dir = Path(sys.argv[1])
+        bg_image_path = Path(sys.argv[2])
+    else:
+        print("사용법:")
+        print("  python src/image_process.py")
+        print("  python src/image_process.py <images_dir> <bg_image_path>")
         sys.exit(1)
-
-    images_dir = Path(sys.argv[1])
-    bg_image_path = Path(sys.argv[2])
 
     process_captured_folder(images_dir, bg_image_path, keep_nobg=True)
 
 
 if __name__ == "__main__":
     main()
+
