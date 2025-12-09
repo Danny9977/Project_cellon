@@ -11,6 +11,7 @@ import time
 import io
 import base64
 import pandas as pd
+import shutil   # 🔹 추가
 
 from typing import Optional
 
@@ -51,9 +52,6 @@ from openpyxl.utils import column_index_from_string
 # ==== costco 크롤링 관련 ====
 from PIL import Image
 
-# config에서 필요한 값 import
-from .config import *  # 가능하면 * 대신 필요한 것만 가져오는 쪽으로 나중에 정리
-
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -72,6 +70,15 @@ from .sheets_client import (
     extract_paid_price_from_item,
 )
 
+# 이미지 후처리 (배경제거 + 배경 합성)
+from .image_process import process_captured_folder   # 🔹 추가
+
+
+
+# ============= 중복이기는 한데, 너무 많이 가져와야 해서 그냥 중복상태로 둠 ==========
+# ui_main.py – config 및 category_ai
+from .config import *  # 가능하면 * 대신 필요한 것만 가져오는 쪽으로 나중에 정리
+
 # ui_main.py – config 및 category_ai
 from .config import (
     today_fmt,
@@ -80,8 +87,18 @@ from .config import (
     digits_only,
     is_macos,
     CATEGORY_EXCEL_DIR,
+    CRAWLING_TEMP_IMAGE_DIR,   # 🔹 캡처 이미지 폴더
+    PRODUCT_BG_IMAGE_PATH,     # 🔹 배경 이미지 파일
+    SELLERTOOL_XLSM_PATH,      # 이미 아래에서 쓰고 있으니 같이 가져옵니다
+    SERVICE_ACCOUNT_JSON,
+    SHEET_ID,
+    WORKSHEET_NAME,
+    DEFAULT_LOOKBACK_DAYS,
+    UPLOAD_READY_DIR,
 )
+#========================================================================
 
+# category_ai – 카테고리 매칭 모듈
 from .category_ai.category_worker import CategoryBuildWorker
 
 
@@ -1270,7 +1287,17 @@ class ChromeCrawler(QWidget):
         today_str = today_iso()
 
         # ==== 3) A~Z 채우기 ====
-        ws.cell(row=row_idx, column=1).value  = ""         # A
+        # A열: 카테고리 엔진 결과 "[category_id] category_path" 형식으로 기록
+        cat_cell = ""
+        try:
+            cid = (self.coupang_category_id or "").strip()
+            cpath = (self.coupang_category_path or "").strip()
+            if cid and cpath:
+                cat_cell = f"[{cid}] {cpath}"
+        except Exception:
+            cat_cell = ""
+            
+        ws.cell(row=row_idx, column=1).value  = cat_cell   # A
         ws.cell(row=row_idx, column=2).value  = full_name  # B
         ws.cell(row=row_idx, column=3).value  = today_str  # C
         ws.cell(row=row_idx, column=4).value  = ""         # D
@@ -1291,6 +1318,7 @@ class ChromeCrawler(QWidget):
         col_BX = column_index_from_string("BX")
         col_CK = column_index_from_string("CK")
         col_CZ = column_index_from_string("CZ")
+        col_DC = column_index_from_string("DC")   # 🔹 추가
 
         ws.cell(row=row_idx, column=col_BJ).value = bj_price
         ws.cell(row=row_idx, column=col_BL).value = bl_price
@@ -1299,6 +1327,7 @@ class ChromeCrawler(QWidget):
         ws.cell(row=row_idx, column=col_BX).value = "상세정보별도표기"
         ws.cell(row=row_idx, column=col_CK).value = "기타재화"
         ws.cell(row=row_idx, column=col_CZ).value = f"{row_idx}.png"
+        ws.cell(row=row_idx, column=col_DC).value = f"{row_idx}_spec.png"  # 🔹 DC 열에 spec 파일명
 
         try:
             wb.save(SELLERTOOL_XLSM_PATH)
@@ -1317,7 +1346,7 @@ class ChromeCrawler(QWidget):
 
         return row_idx
 
-    def _capture_costco_image(self, row_idx: int):
+    def _capture_costco_image(self, row_idx: int, date_str: str | None = None):
         """
         코스트코 상품 이미지 여러 장 저장 (다운로드 우선, 실패 시 캡처 백업)
         - 메인(가장 큰) 이미지는 건너뛰고
@@ -1369,10 +1398,12 @@ class ChromeCrawler(QWidget):
                 f"🧩 코스트코 메인 이미지(가장 큰 img)를 area={max_area:.1f} 로 추정 → 다운로드에서 제외"
             )
 
-        # ====== 2) 날짜별 폴더 생성 (YYYYMMDD) ======
-        base_dir = Path(SELLERTOOL_XLSM_PATH).parent
-        date_folder = datetime.now().strftime("%Y%m%d")
-        save_dir = base_dir / date_folder
+        # ====== 2) 날짜별 캡처 폴더: assets/crawling_temp/image/YYYYMMDD ======
+        if date_str is None:
+            from datetime import datetime
+            date_str = datetime.now().strftime("%Y%m%d")
+
+        save_dir = CRAWLING_TEMP_IMAGE_DIR / date_str
         save_dir.mkdir(parents=True, exist_ok=True)
 
         saved_count = 0
@@ -1510,12 +1541,12 @@ class ChromeCrawler(QWidget):
             self._log("⚠️ 먼저 [대상윈도우]로 제목/가격/URL을 크롤링해 주세요.")
             return
 
-        # === 1) 도메인에 따라 분기 ===
         host = urlparse(self.crawled_url or "").netloc.lower()
 
-        # 코스트코: sellertool_upload.xlsm 에 기록 + 이미지 캡처
+        # === 1) 코스트코 전용 처리 ===
         if "costco.co.kr" in host:
             self._log("🧾 코스트코 상품으로 인식 → 엑셀 기록 + 이미지/스펙 캡처")
+
             row_idx = None
             try:
                 row_idx = self._write_costco_to_seller_excel()
@@ -1523,41 +1554,85 @@ class ChromeCrawler(QWidget):
                 self._log(f"[오류] 코스트코 엑셀 기록 실패: {e}")
 
             if row_idx:
-                # 상품 이미지 여러 장
+                from datetime import datetime
+                date_str = datetime.now().strftime("%Y%m%d")
+
+                image_day_dir = CRAWLING_TEMP_IMAGE_DIR / date_str
+                upload_day_dir = UPLOAD_READY_DIR / date_str
+
+                # (1) 코스트코 상품 이미지 캡처 → image/YYYYMMDD
                 try:
-                    self._capture_costco_image(row_idx)
+                    self._capture_costco_image(row_idx, date_str)
                 except Exception as e:
                     self._log(f"[오류] 코스트코 이미지 캡처 실패: {e}")
 
-                # 스펙 영역 캡처
+                # (2) 스펙 영역 캡처 → image/YYYYMMDD/{row_idx}_spec.png
                 try:
-                    self._capture_costco_spec(row_idx)
+                    self._capture_costco_spec(row_idx, date_str)
                 except Exception as e:
                     self._log(f"[오류] 코스트코 스펙 캡처 실패: {e}")
 
-            return
+                # (3) BRIA 배경제거 + 배경 합성 (image_process)
+                try:
+                    self._log(f"🧪 image_process: {image_day_dir} 처리 시작")
+                    process_captured_folder(
+                        image_day_dir,
+                        PRODUCT_BG_IMAGE_PATH,
+                        keep_nobg=True,
+                    )
+                    self._log("✅ image_process: 배경제거 + 배경 합성 완료")
+                except Exception as e:
+                    self._log(f"[오류] image_process 후처리 실패: {e}")
 
+                # (4) upload_ready/YYYYMMDD 로 메인 + 스펙 이미지 복사
+                try:
+                    upload_day_dir.mkdir(parents=True, exist_ok=True)
 
+                    # 4-1) 메인 이미지 (후처리된 row_idx.png)
+                    src_main = image_day_dir / f"{row_idx}.png"
+                    if src_main.exists():
+                        dst_main = upload_day_dir / f"{row_idx}.png"
+                        shutil.copy2(src_main, dst_main)
+                        self._log(f"📦 업로드 폴더로 메인 이미지 복사: {dst_main}")
+                    else:
+                        self._log(f"⚠️ 메인 이미지 파일을 찾지 못했습니다: {src_main}")
 
+                    # 4-2) 스펙 이미지 (row_idx_spec.png)
+                    src_spec = image_day_dir / f"{row_idx}_spec.png"
+                    if src_spec.exists():
+                        dst_spec = upload_day_dir / f"{row_idx}_spec.png"
+                        shutil.copy2(src_spec, dst_spec)
+                        self._log(f"📦 업로드 폴더로 스펙 이미지 복사: {dst_spec}")
+                    else:
+                        self._log(f"⚠️ 스펙 이미지 파일을 찾지 못했습니다: {src_spec}")
 
-        # (선택) 도매매 전용 분기도 가능하지만,
-        # 현재는 '도매매 외 사이트도 구글시트 소싱목록에 기록' 구조이므로 그대로 둠.
-        # if "domeme.domeggook.com" in host:
-        #     ...  # 필요시 별도 처리
+                except Exception as e:
+                    self._log(f"[오류] 업로드 폴더 복사 실패: {e}")
 
-        # === 2) 나머지(도매매/네이버/기타)는 기존 로직 그대로 ===
-        try:
-            # ✅ 1) 먼저 구글 밑줄 실행 (에러가 나도 기록은 계속 진행)
+            # 🔹 코스트코도 '소싱상품목록'에 기록
             try:
                 self.google_underline()
             except Exception as e:
-                self._log(f"⚠️ 구글 밑줄 실행 중 오류(기록은 계속 진행): {e}")
+                self._log(f"⚠️ 구글 밑줄 실행 중 오류(코스트코): {e}")
 
-            # ✅ 2) 그 다음 실제 데이터 기록 (소싱상품목록 시트)
+            try:
+                self._write_row_to_first_empty_a()
+            except Exception as e:
+                self._log(f"[오류] 소싱상품목록 시트 기록 실패(코스트코): {e}")
+
+            return
+
+        # === 2) 나머지(도매매/기타) 기존 로직 ===
+        try:
+            self.google_underline()
+        except Exception as e:
+            self._log(f"⚠️ 구글 밑줄 실행 중 오류(기타): {e}")
+
+        try:
             self._write_row_to_first_empty_a()
-
         except Exception as e:
             self._log(f"[오류] 시트 기록 실패: {e}")
+
 
     # ---------- 시트 클릭 대기 → 기록 ----------
     def _wait_for_sheet_click_then_write(self):
@@ -2317,12 +2392,11 @@ class ChromeCrawler(QWidget):
         except Exception as e:
             self._log(f"❌ 구글 밑줄 처리 중 오류: {e}")
             
-    def _capture_costco_spec(self, row_idx: int):
+    def _capture_costco_spec(self, row_idx: int, date_str: str | None = None):
         """
         코스트코 상품 페이지의 '스펙' 패널을 열고
-        패널 전체(mat-expansion-panel#product_specs)만 그대로 캡처한다.
-        - 파일명: {row_idx}_spec.png
-        - 경로: sellertool_upload.xlsm 이 있는 폴더 아래 /YYYYMMDD/
+        패널 전체를 캡처한다.
+        - 1차 저장: assets/crawling_temp/image/YYYYMMDD/{row_idx}_spec.png
         """
         try:
             driver = self._attach_driver()
@@ -2331,14 +2405,18 @@ class ChromeCrawler(QWidget):
             return
 
         try:
-            # 1) '스펙' 패널 열고, 패널 요소와 body 요소를 얻음
             spec_panel, spec_body = self._open_costco_spec_section()
 
-            # 2) 저장 폴더 준비 (날짜별)
-            base_dir = Path(SELLERTOOL_XLSM_PATH).parent
-            date_folder = datetime.now().strftime("%Y%m%d")
-            save_dir = base_dir / date_folder
+            if date_str is None:
+                from datetime import datetime
+                date_str = datetime.now().strftime("%Y%m%d")
+
+            # 🔹 image 쪽 날짜 폴더에 먼저 저장
+            base_dir = CRAWLING_TEMP_IMAGE_DIR
+            save_dir = base_dir / date_str
             save_dir.mkdir(parents=True, exist_ok=True)
+
+            self._log(f"📂 코스트코 스펙 이미지 저장 폴더: {save_dir}")
 
             save_path = save_dir / f"{row_idx}_spec.png"
 

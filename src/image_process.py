@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Iterable, Set
 
 from PIL import Image
-from transformers import pipeline, Pipeline
+
 
 # 🔹 config 에서 경로 상수 가져오기
 from .config import CRAWLING_TEMP_IMAGE_DIR, PRODUCT_BG_IMAGE_PATH

@@ -28,7 +28,7 @@ CRAWLING_TEMP_IMAGE_DIR = CRAWLING_TEMP_DIR / "image"   # 캡처 이미지
 CRAWLING_TEMP_EXCEL_DIR = CRAWLING_TEMP_DIR / "excel"   # 엑셀 (있다면)
 
 # 업로드용 폴더
-UPLOAD_READY_DIR = CRAWLING_TEMP_DIR / "upload"
+UPLOAD_READY_DIR = CRAWLING_TEMP_DIR / "upload_ready"
 
 # 배경 이미지 (지금 쓰는 1000x1000)
 PRODUCT_BG_IMAGE_PATH = ASSETS_DIR / "image" / "bg" / "product_bg_1000.jpg"
