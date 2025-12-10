@@ -23,7 +23,7 @@ from pathlib import Path
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, QTextEdit, QHBoxLayout, QSpinBox,
-    QDialog, QListWidget, QListWidgetItem
+    QDialog, QListWidget, QListWidgetItem, QLineEdit,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
@@ -344,6 +344,205 @@ def _on_cat_finished(self, df):
 
     self._log(f"✅ 카테고리 분석 완료 — 총 {len(df)}개 카테고리")
     # 여기서 df를 멤버 변수에 저장하거나 UI에 반영할 수 있음
+
+
+# =========================
+# 카테고리 수동 선택 다이얼로그
+# =========================
+class CategorySelectDialog(QDialog):
+    """
+    카테고리 수동 선택 창:
+      - 상단: 상품명 / 원본 카테고리 안내
+      - 중간: 검색창 + [이전단어] [다음단어]
+      - 아래: 카테고리 리스트(QListWidget)
+      - 하단: [LLM에게 맡기기] [취소] [선택]
+    """
+    def __init__(self, product_name: str, source_category_path: str, candidates_df, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("카테고리 수동 선택")
+        self.resize(820, 540)
+
+        # pandas DataFrame -> 내부 보관
+        self._candidates = candidates_df.reset_index(drop=True)
+        self._matched_indices: list[int] = []
+        self._match_pos: int = -1
+
+        layout = QVBoxLayout(self)
+
+        # ---- 상단 안내 ----
+        info = QLabel(
+            f"<b>수동 카테고리 선택</b><br>"
+            f"상품명: {product_name}<br>"
+            f"원본 카테고리: {source_category_path}"
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        # ---- 검색줄 + 이전/다음 버튼 ----
+        search_row = QHBoxLayout()
+        lbl_search = QLabel("검색:")
+        self.edit_search = QLineEdit()
+        self.edit_search.setPlaceholderText("카테고리 ID / 경로 일부를 입력하면 실시간으로 찾습니다.")
+        self.edit_search.textChanged.connect(self._on_search_text_changed)
+
+        self.btn_prev = QPushButton("이전단어")
+        self.btn_next = QPushButton("다음단어")
+        self.btn_prev.clicked.connect(self._on_prev_clicked)
+        self.btn_next.clicked.connect(self._on_next_clicked)
+
+        # 검색 초기엔 비활성화
+        self.btn_prev.setEnabled(False)
+        self.btn_next.setEnabled(False)
+
+        search_row.addWidget(lbl_search)
+        search_row.addWidget(self.edit_search)
+        search_row.addWidget(self.btn_prev)
+        search_row.addWidget(self.btn_next)
+        layout.addLayout(search_row)
+
+        # ---- 카테고리 리스트 ----
+        self.list_widget = QListWidget()
+        for idx, row in self._candidates.iterrows():
+            cat_id = str(row.get("category_id", ""))
+            cat_path = str(row.get("category_path", ""))
+            txt = f"{cat_id} | {cat_path}"
+            item = QListWidgetItem(txt)
+            # 나중에 DataFrame 인덱스로 다시 찾아 쓰기 위해 저장
+            item.setData(Qt.ItemDataRole.UserRole, idx)
+            self.list_widget.addItem(item)
+        layout.addWidget(self.list_widget)
+
+        # 더블클릭시 바로 선택
+        self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
+
+        # ---- 버튼 줄 ----
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+
+        self.btn_use_llm = QPushButton("LLM에게 맡기기")
+        self.btn_use_llm.clicked.connect(self._on_use_llm)
+
+        self.btn_cancel = QPushButton("취소")
+        self.btn_cancel.clicked.connect(self.reject)
+
+        self.btn_ok = QPushButton("선택")
+        self.btn_ok.clicked.connect(self._on_ok_clicked)
+
+        btn_row.addWidget(self.btn_use_llm)
+        btn_row.addWidget(self.btn_cancel)
+        btn_row.addWidget(self.btn_ok)
+        layout.addLayout(btn_row)
+
+        # 내부 플래그: LLM 위임 여부
+        self._use_llm = False
+
+    # ------------------------------------------------------------------
+    # 공개 메서드: 다이얼로그 결과 읽기
+    # ------------------------------------------------------------------
+    def use_llm(self) -> bool:
+        """사용자가 'LLM에게 맡기기' 버튼을 눌렀는지 여부."""
+        return self._use_llm
+
+    def selected_category(self):
+        """
+        선택된 카테고리를 dict로 반환.
+        (category_matcher.CategoryMatcher.match_category 에서 기대하는 형태)
+        """
+        item = self.list_widget.currentItem()
+        if not item:
+            return None
+
+        row_idx = item.data(Qt.ItemDataRole.UserRole)
+        row = self._candidates.loc[row_idx]
+
+        cat_id = str(row.get("category_id", ""))
+        cat_path = str(row.get("category_path", ""))
+
+        return {
+            "category_id": cat_id,
+            "category_path": cat_path,
+            "reason": "사용자 수동 선택",
+        }
+
+    # ------------------------------------------------------------------
+    # 버튼 / 이벤트 핸들러
+    # ------------------------------------------------------------------
+    def _on_ok_clicked(self):
+        if self.list_widget.currentItem() is None:
+            # 아무 것도 선택 안 된 경우는 그냥 무시 (필요하면 경고 다이얼로그 띄워도 됨)
+            return
+        self.accept()
+
+    def _on_use_llm(self):
+        """
+        'LLM에게 맡기기' → CategoryMatcher 쪽에서 None을 받도록
+        그냥 Reject 처리합니다.
+        """
+        self._use_llm = True
+        self.reject()
+
+    def _on_item_double_clicked(self, item: QListWidgetItem):
+        # 더블클릭 == 선택
+        self._on_ok_clicked()
+
+    # ------------------------------------------------------------------
+    # 검색 관련 로직
+    # ------------------------------------------------------------------
+    def _on_search_text_changed(self, text: str):
+        """
+        검색창 텍스트가 바뀔 때마다 즉시 전체 리스트에서 매칭되는 인덱스를 모아놓고,
+        첫 번째 매칭 항목으로 포커스를 이동.
+        """
+        text = (text or "").strip().lower()
+        self._matched_indices.clear()
+        self._match_pos = -1
+
+        if not text:
+            self.btn_prev.setEnabled(False)
+            self.btn_next.setEnabled(False)
+            return
+
+        # 리스트 전체 스캔 → text 를 포함하는 항목 인덱스만 수집
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if text in item.text().lower():
+                self._matched_indices.append(i)
+
+        has_match = bool(self._matched_indices)
+        self.btn_prev.setEnabled(has_match)
+        self.btn_next.setEnabled(has_match)
+
+        if has_match:
+            self._match_pos = 0
+            self._focus_current_match()
+
+    def _focus_current_match(self):
+        """현재 _match_pos 에 해당하는 항목을 선택/스크롤."""
+        if not self._matched_indices:
+            return
+        if self._match_pos < 0 or self._match_pos >= len(self._matched_indices):
+            return
+
+        row = self._matched_indices[self._match_pos]
+        item = self.list_widget.item(row)
+        self.list_widget.setCurrentRow(row)
+        self.list_widget.scrollToItem(item)
+
+    def _on_next_clicked(self):
+        """'다음단어' 버튼 → 다음 매칭 항목으로 이동 (순환)."""
+        if not self._matched_indices:
+            return
+        self._match_pos = (self._match_pos + 1) % len(self._matched_indices)
+        self._focus_current_match()
+
+    def _on_prev_clicked(self):
+        """'이전단어' 버튼 → 이전 매칭 항목으로 이동 (순환)."""
+        if not self._matched_indices:
+            return
+        self._match_pos = (self._match_pos - 1) % len(self._matched_indices)
+        self._focus_current_match()
+
+
     
 
 # =========================
@@ -3004,4 +3203,53 @@ class ChromeCrawler(QWidget):
 
         except Exception as e:
             self._log(f"❌ strong_name_rules JSON 업데이트 중 예외 발생: {e}")
+            
+    # ==========================================================
+    # 카테고리 수동 선택 콜백 (CategoryMatcher → UI)
+    # ==========================================================
+    def _resolve_category_manually(self, product_name: str, source_category_path: str, candidates_df):
+        """
+        CategoryMatcher 에서 meta/룰로 확정 못 했을 때 호출되는 UI 콜백.
+        - CategorySelectDialog 를 띄워 사용자가 직접 선택하게 함
+        - 'LLM에게 맡기기'나 닫기/취소 시에는 None 리턴 → LLM fallback.
+        """
+        try:
+            dlg = CategorySelectDialog(
+                product_name=product_name,
+                source_category_path=source_category_path,
+                candidates_df=candidates_df,
+                parent=self,
+            )
+        except Exception as e:
+            # 혹시라도 UI 생성 실패하면 LLM으로 바로 넘기도록
+            self._log(f"[카테고리] 수동 선택 다이얼로그 생성 실패: {e}")
+            return None
+
+        result_code = dlg.exec()
+
+        # 1) 사용자가 '선택'으로 종료한 경우만 dict 반환
+        if result_code == QDialog.DialogCode.Accepted:
+            result = dlg.selected_category()
+            if result is None:
+                # 이 경우도 결국 LLM으로 넘김
+                self._log("ℹ️ 수동 선택 창에서 선택값이 없어 LLM으로 위임합니다.")
+                return None
+
+            self._log(
+                f"✅ 수동 카테고리 선택: "
+                f"{result.get('category_id')} | {result.get('category_path')}"
+            )
+
+            # 여기서 strong_name_rule 보강 로직(_extract_keywords + upsert_strong_name_rule)
+            # 이미 기존에 구현하신 코드가 있다면, 그대로 호출해 주시면 됩니다.
+            # (예: self._update_strong_name_rules(product_name, result['category_id']))
+
+            return result
+
+        # 2) 사용자가 'LLM에게 맡기기' 또는 '취소/닫기' 한 경우
+        if dlg.use_llm():
+            self._log("ℹ️ 사용자가 'LLM에게 맡기기'를 선택했습니다. → LLM fallback.")
+        else:
+            self._log("ℹ️ 수동 카테고리 선택 취소 → LLM fallback.")
+        return None
 

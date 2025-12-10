@@ -278,10 +278,90 @@ class CategoryMatcher:
         self._log(f"    - coupang_rule.coupang_category_ids = {candidate_ids}")
 
         # meta_key는 있는데, 거기에 매핑된 후보가 없으면 → 전체 LLM 검색
+        # 1) strong_name_rules 재시도
+        # 2) 수동 선택(UI) 기회 부여
+        # 3) 그래도 안 되면 전체 LLM 검색
         if not candidate_ids:
-            self._log("  ❌ meta_key는 있으나 candidate_ids가 비어 있음 → 전체 cat_master LLM 검색")
-            self._log(f"    - 전체 카테고리 수: {len(self.cat_master)}")
-            
+            self._log(" ❌ meta_key는 있으나 candidate_ids가 비어 있음")
+
+            # 0) strong_name_rules 먼저 시도 (전체 cat_master 기준)
+            strong_result = self._pick_by_strong_keyword(
+                product_name=product_name,
+                candidates_df=self.cat_master,  # 전체 마스터에서 strong_name_rules 대상만 자동 필터링
+            )
+            if strong_result is not None:
+                strong_result.update(
+                    {
+                        "used_llm": False,
+                        "meta_key": meta_key,
+                        "num_candidates": len(self.cat_master),
+                    }
+                )
+                self._log(
+                    " strong_name_rules 결과 사용 "
+                    "(candidate_ids 없음, LLM 미호출): "
+                    f"{strong_result}"
+                )
+                return strong_result
+
+            # 1) meta label 기반으로 수동 선택 시도
+            if self._manual_resolver is not None:
+                # meta_rules 에서 label 추출 (예: '주방용품>냄비/솥')
+                label = ""
+                try:
+                    label = str(self.meta_rules.get(meta_key, {}).get("label") or "")
+                except Exception:
+                    label = ""
+
+                candidates_df = self.cat_master
+
+                if label:
+                    # 공백 제거 후 부분 포함으로 필터링
+                    label_norm = label.replace(" ", "")
+                    cat_paths = (
+                        self.cat_master["category_path"]
+                        .astype(str)
+                        .str.replace(" ", "", regex=False)
+                    )
+                    candidates_df = self.cat_master[
+                        cat_paths.str.contains(label_norm)
+                    ]
+
+                # label 기반 필터 결과가 없으면, 어쩔 수 없이 전체 cat_master 사용
+                if candidates_df is None or candidates_df.empty:
+                    candidates_df = self.cat_master
+
+                self._log(
+                    " ▶ meta_key={meta_key}, candidate_ids 없음 → "
+                    f"수동 선택 후보 {len(candidates_df)}개"
+                )
+
+                manual = self._manual_resolver(
+                    product_name,
+                    source_category_path,
+                    candidates_df,
+                )
+
+                if manual is not None:
+                    manual.setdefault("used_llm", False)
+                    manual.setdefault("meta_key", meta_key)
+                    manual.setdefault("num_candidates", len(candidates_df))
+                    self._log(
+                        " 수동 선택 결과 사용 "
+                        "(candidate_ids 없음, LLM 미호출): "
+                        f"{manual}"
+                    )
+                    return manual
+
+                self._log(
+                    " ▶ 수동 선택 없음 또는 'LLM에게 맡기기' 선택 "
+                    "→ 전체 cat_master LLM 검색"
+                )
+
+            # 2) 최종 fallback: 기존처럼 전체 LLM 호출
+            self._log(" ▶ candidate_ids 없음 → 전체 cat_master LLM 검색 모드")
+            self._log(f" - 전체 카테고리 수: {len(self.cat_master)}")
+
             llm_result = suggest_category_with_candidates(
                 product_name=product_name,
                 brand=brand,
@@ -291,9 +371,9 @@ class CategoryMatcher:
             llm_result.setdefault("used_llm", True)
             llm_result.setdefault("meta_key", meta_key)
             llm_result.setdefault("num_candidates", None)
-
-            self._log(f"  🔚 LLM 결과 수신 (candidate_ids 없음): {llm_result}")
+            self._log(f" LLM 결과 수신 (candidate_ids 없음): {llm_result}")
             return llm_result
+
 
         # 쿠팡 카테고리 마스터에서 후보 필터링
         candidates_df = self.cat_master[
