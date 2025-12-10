@@ -38,6 +38,33 @@ def _file_key(path: Path) -> str:  # 파일 경로를 해시값(고유키)로 �
     h = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()  # 경로를 sha1 해시로 변환
     return h  # 해시값 반환
 
+# ====== 신규 스키마 검사 (col_c~col_j 포함 여부) ======
+
+NEW_SCHEMA_REQUIRED_COLS = [
+    "category_id",
+    "category_path",
+    "level1",
+    "level2",
+    "level3",
+    "level4",
+    "col_c",
+    "col_d",
+    "col_e",
+    "col_f",
+    "col_g",
+    "col_h",
+    "col_i",
+    "col_j",
+]
+
+def _has_new_schema(df: pd.DataFrame) -> bool:
+    """pkl DataFrame 이 신규 스키마인지 검사."""
+    if df is None or df.empty:
+        return False
+    cols = set(df.columns)
+    return all(c in cols for c in NEW_SCHEMA_REQUIRED_COLS)
+
+
 # ===== 1) 개별 엑셀에서 카테고리 추출 =====
 def extract_categories_from_file(path: str) -> pd.DataFrame:
     """
@@ -187,18 +214,19 @@ def get_category_master(
         excel_mtime = excel_path.stat().st_mtime  # 엑셀 파일 수정시간
         use_cache = False  # 캐시 사용 여부
 
-        if cache_pkl.exists():  # 캐시 파일이 있으면
-            cache_mtime = cache_pkl.stat().st_mtime  # 캐시 파일 수정시간
-            if cache_mtime >= excel_mtime:  # 캐시가 최신이면
-                use_cache = True  # 캐시 사용
-
-        if use_cache:  # 캐시 사용 시
-            df = pd.read_pickle(cache_pkl)  # 캐시에서 데이터 읽기
-            status = "캐시 사용"  # 상태 메시지
-        else:  # 캐시가 없거나 오래됐으면
-            df = extract_categories_from_file(str(excel_path))  # 엑셀에서 데이터 추출
-            df.to_pickle(cache_pkl)  # 캐시 파일로 저장
-            status = "재분석 및 캐시 갱신"  # 상태 메시지
+        if use_cache:
+            df = pd.read_pickle(cache_pkl)
+            # ✅ 구버전 캐시(= col_c~col_j 없는 데이터)면 자동 재분석
+            if not _has_new_schema(df):
+                df = extract_categories_from_file(str(excel_path))
+                df.to_pickle(cache_pkl)
+                status = "구버전 캐시 감지 → 재분석 및 캐시 갱신"
+            else:
+                status = "캐시 사용"
+        else:
+            df = extract_categories_from_file(str(excel_path))
+            df.to_pickle(cache_pkl)
+            status = "재분석 및 캐시 갱신"
 
         per_file_dfs.append(df)  # 결과 리스트에 추가
 
@@ -251,6 +279,15 @@ def load_category_master(force_rebuild: bool = False,
         if progress_cb:
             progress_cb(0, f"기존 카테고리 마스터 캐시 로드: {MASTER_CACHE_FILE}")
         df = pd.read_pickle(MASTER_CACHE_FILE)
+
+        # ✅ 마스터 캐시도 구버전(= col_c~col_j 없음)이면 자동 재생성
+        if not _has_new_schema(df):
+            if progress_cb:
+                progress_cb(0, "구버전 마스터 캐시 감지 → 전체 재생성 시작")
+            df = get_category_master(category_dir=CATEGORY_DIR, progress_cb=progress_cb)
+            _category_master_cache = df
+            return df
+
         if progress_cb:
             progress_cb(100, f"카테고리 마스터 캐시 로드 완료 (총 {len(df)}개)")
         _category_master_cache = df

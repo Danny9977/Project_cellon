@@ -13,6 +13,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 
 from .config import digits_only, is_int_string
+from typing import Mapping, Any
 
 # config에서 필요한 값 import
 from .config import (
@@ -262,6 +263,81 @@ class SheetsClient:
                 sleep_s = base_sleep * (2 ** (attempt - 1))
                 self.logger(f"⏳ 재시도 {attempt}/{max_tries} ... {sleep_s:.1f}s")
                 time.sleep(sleep_s)
+                
+    # ====== 로컬 엑셀(.xlsx)에 값 쓰기 헬퍼들 ======
+    def write_cells_to_excel(xlsx_path: str,
+                            sheet_name: str,
+                            cell_value_map: dict[str, object]) -> None:
+        """
+        단순 A1, B5 처럼 "셀 주소 → 값" 형태로 여러 셀에 값을 쓰는 헬퍼.
+        예:
+            write_cells_to_excel(
+                "쿠팡업로드.xlsx",
+                "data",
+                {
+                    "A10": "상품명",
+                    "B10": "옵션명",
+                    "C10": "카테고리ID",
+                }
+            )
+        """
+        wb = load_workbook(xlsx_path)
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"시트 '{sheet_name}' 를 엑셀에서 찾을 수 없습니다.")
+
+        ws = wb[sheet_name]
+
+        for addr, value in cell_value_map.items():
+            ws[addr] = value
+
+        wb.save(xlsx_path)
+
+    # ====== 카테고리 정보 엑셀 쓰기 헬퍼 ======
+    def write_category_info_to_excel_row(
+        xlsx_path: str,
+        sheet_name: str,
+        row: int,
+        category_info: Mapping[str, Any],
+        column_mapping: Mapping[str, str],
+    ) -> None:
+        """
+        category_loader.get_category_info() 의 dict 를
+        엑셀 특정 행(row)에 써 넣는 헬퍼.
+
+        예시:
+            info = get_category_info(80289)
+            write_category_info_to_excel_row(
+                "쿠팡업로드.xlsx",
+                "data",
+                row=10,
+                category_info=info,
+                column_mapping={
+                    "category_id": "C",        # C10 셀에 category_id
+                    "category_path": "D",      # D10 셀에 category_path
+                    "level1": "E",             # E10 에 level1
+                    "level2": "F",
+                    "level3": "G",
+                    "level4": "H",
+                    # 필요하면 col_c ~ col_j 도 매핑 가능
+                    "col_c": "J",
+                    "col_d": "K",
+                    # ...
+                },
+            )
+        """
+        wb = load_workbook(xlsx_path)
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"시트 '{sheet_name}' 를 엑셀에서 찾을 수 없습니다.")
+        ws = wb[sheet_name]
+
+        for key, col_letter in column_mapping.items():
+            if key not in category_info:
+                continue
+            col_index = column_index_from_string(col_letter)
+            ws.cell(row=row, column=col_index, value=category_info[key])
+
+        wb.save(xlsx_path)
+
 
 # digits_only, is_int_string 등 유틸 함수는 config.py에서 import 하세요.
 
