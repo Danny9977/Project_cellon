@@ -39,44 +39,112 @@ def _file_key(path: Path) -> str:  # 파일 경로를 해시값(고유키)로 �
     return h  # 해시값 반환
 
 # ===== 1) 개별 엑셀에서 카테고리 추출 =====
-def extract_categories_from_file(path: str) -> pd.DataFrame:  # 엑셀 1개에서 카테고리 추출
+def extract_categories_from_file(path: str) -> pd.DataFrame:
+    """
+    엑셀 1개에서 카테고리 추출
+
+    - 'data' 시트의 A열에 있는 "[카테고리ID] 카테고리>경로" 문자열을 찾아
+      category_id / category_path / level1~4 를 만든다.
+    - 같은 행의 C~J 열(0-based로 2~9열)을 그대로 저장해서,
+      나중에 셀러툴 업로드 엑셀(data 시트 J~Q)에 복사해서 쓸 수 있게 한다.
+    """
     df = pd.read_excel(path, sheet_name="data", header=None)  # 'data' 시트 전체 읽기
-    col0 = df.iloc[:, 0]  # 첫 번째 컬럼만 추출
+    col0 = df.iloc[:, 0]  # 첫 번째 컬럼(A열)만 추출
 
-    cat_rows = []  # 카테고리 정보 저장 리스트
-    for v in col0:  # 첫 컬럼의 모든 셀 반복
-        if isinstance(v, str) and "[" in v and "]" in v:  # [숫자]가 포함된 문자열만 처리
-            m = re.match(r"\[(\d+)\]\s*(.+)", v.strip())  # [숫자]와 경로 분리
-            if not m:  # 패턴 안 맞으면 건너뜀
-                continue
-            cat_id = m.group(1)  # 카테고리ID 추출
-            path_str = m.group(2)  # 경로 문자열 추출
-            cat_rows.append((cat_id, path_str))  # 튜플로 리스트에 추가
+    # (row_idx, cat_id, path_str) 목록
+    cat_rows: list[tuple[int, str, str]] = []
 
-    if not cat_rows:  # 카테고리 정보 없으면
+    for row_idx, v in col0.items():
+        if not (isinstance(v, str) and "[" in v and "]" in v):
+            continue
+
+        m = re.match(r"\[(\d+)\]\s*(.+)", v.strip())
+        if not m:
+            continue
+
+        cat_id = m.group(1)
+        path_str = m.group(2)
+        cat_rows.append((row_idx, cat_id, path_str))
+
+    if not cat_rows:
         return pd.DataFrame(
-            columns=["category_id", "category_path", "level1", "level2", "level3", "level4"]  # 빈 테이블 반환
+            columns=[
+                "category_id",
+                "category_path",
+                "level1",
+                "level2",
+                "level3",
+                "level4",
+                # C~J 열 원본 값 (없으면 빈 문자열)
+                "col_c",
+                "col_d",
+                "col_e",
+                "col_f",
+                "col_g",
+                "col_h",
+                "col_i",
+                "col_j",
+            ]
         )
 
-    cat_rows = list(dict.fromkeys(cat_rows))  # 중복 제거
+    # (cat_id, path_str) 중복 제거 (row_idx는 무시)
+    # → 같은 카테고리가 여러 파일에 중복 있을 경우 첫 번째만 사용
+    seen = {}
+    for row_idx, cat_id, path_str in cat_rows:
+        if cat_id not in seen:
+            seen[cat_id] = (row_idx, path_str)
+    cat_rows_unique = [(rid, cid, p) for cid, (rid, p) in seen.items()]
 
-    records = []  # 최종 테이블에 넣을 딕셔너리 리스트
-    for cat_id, path_str in cat_rows:  # 추출한 카테고리 튜플 반복
-        parts = [p.strip() for p in path_str.split(">")]  # '>'로 경로 분리
-        parts = parts + [""] * (4 - len(parts))  # 단계가 4개보다 적으면 빈칸 채움
-        level1, level2, level3, level4 = parts[:4]  # 최대 4단계까지만 사용
+    records = []
+
+    for row_idx, cat_id, path_str in cat_rows_unique:
+        parts = [p.strip() for p in path_str.split(">")]
+        parts = parts + [""] * (4 - len(parts))
+        level1, level2, level3, level4 = parts[:4]
+
+        # 이 카테고리가 있는 행의 C~J 열 값 추출 (없으면 "")
+        row = df.iloc[row_idx] if row_idx < len(df) else pd.Series(dtype=object)
+
+        def _get_col(series: pd.Series, idx: int) -> str:
+            try:
+                v = series.iloc[idx]
+            except Exception:
+                return ""
+            if pd.isna(v):
+                return ""
+            return str(v).strip()
+
+        col_c = _get_col(row, 2)  # C열
+        col_d = _get_col(row, 3)  # D열
+        col_e = _get_col(row, 4)  # E열
+        col_f = _get_col(row, 5)  # F열
+        col_g = _get_col(row, 6)  # G열
+        col_h = _get_col(row, 7)  # H열
+        col_i = _get_col(row, 8)  # I열
+        col_j = _get_col(row, 9)  # J열
+
         records.append(
             {
-                "category_id": cat_id,  # 카테고리ID
-                "category_path": path_str,  # 전체 경로 문자열
-                "level1": level1,  # 1단계
-                "level2": level2,  # 2단계
-                "level3": level3,  # 3단계
-                "level4": level4,  # 4단계
+                "category_id": cat_id,
+                "category_path": path_str,
+                "level1": level1,
+                "level2": level2,
+                "level3": level3,
+                "level4": level4,
+                # 카테고리 엑셀 data 시트의 C~J 열 원본값
+                "col_c": col_c,
+                "col_d": col_d,
+                "col_e": col_e,
+                "col_f": col_f,
+                "col_g": col_g,
+                "col_h": col_h,
+                "col_i": col_i,
+                "col_j": col_j,
             }
         )
 
-    return pd.DataFrame(records)  # 모든 카테고리 정보를 테이블로 반환
+    return pd.DataFrame(records)
+
 
 # ===== 2) 증분 방식 카테고리 마스터 생성 =====
 def get_category_master(
@@ -192,6 +260,51 @@ def load_category_master(force_rebuild: bool = False,
     df = get_category_master(category_dir=CATEGORY_DIR, progress_cb=progress_cb)
     _category_master_cache = df
     return df
+
+# === 4) 카테고리 ID로 행 조회 헬퍼 (C~J 열 가져오는 헬퍼)===
+def get_category_row_by_id(category_id: str) -> Optional[pd.Series]:
+    """
+    category_id 로 카테고리 마스터에서 해당 행을 찾아 Series 로 반환.
+    - 없으면 None
+    - col_c ~ col_j 까지 같이 포함되어 있음.
+    """
+    df = load_category_master()
+    if df is None or df.empty:
+        return None
+
+    cid = str(category_id).strip()
+    if not cid:
+        return None
+
+    mask = df["category_id"].astype(str) == cid
+    sub = df[mask]
+    if sub.empty:
+        return None
+    return sub.iloc[0]
+
+# === pkl data 확인용 특정 카테고리 ID로 정보 조회 ===
+
+def find_category_by_id(category_id: str | int):
+    """
+    주어진 쿠팡 category_id 에 해당하는 카테고리 정보를 DataFrame으로 반환.
+    없으면 빈 DataFrame.
+    """
+    df = load_category_master()
+    cid = str(category_id).strip()
+    return df[df["category_id"] == cid]
+
+
+def get_category_info(category_id: str | int) -> dict | None:
+    """
+    주어진 쿠팡 category_id 의 한 줄 정보를 dict 로 반환.
+    - 없으면 None
+    - keys: category_id, category_path, level1~4
+    """
+    df = find_category_by_id(category_id)
+    if df.empty:
+        return None
+    return df.iloc[0].to_dict()
+
 
 
 

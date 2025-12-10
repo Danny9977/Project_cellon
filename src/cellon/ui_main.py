@@ -63,6 +63,9 @@ from .core.rules_loader import upsert_strong_name_rule
 # category_ai – 키워드 추출 모듈
 from .category_ai.category_llm import _extract_keywords
 
+# 🔹 카테고리 마스터(엑셀 C~J 열 메타 포함) 조회용
+from .category_ai.category_loader import get_category_row_by_id
+
 # 시트/쿠팡 API: 분리된 모듈
 from .sheets_client import (
     SheetsClient,
@@ -1214,9 +1217,10 @@ class ChromeCrawler(QWidget):
         - H열 : 등록상품명의 첫 단어
         - I열 ~ Z열 : 공란
 
+        - J~Q열 : 카테고리 엑셀 data 시트의 C~J 열을 그대로 복사해서 넣는다.
         - BJ : 5만원 이하 -> 코스트코 가격 * 1.3
                5만원 초과 ~ 10만원 이하 -> 코스트코 가격 * 1.2
-               10만원 초과 -> 원가 그대로
+               10만원 초과 -> 코스트코 가격 * 1.15
         - BL : BJ * 1.05
         - BM : 999
         - BN : 2
@@ -1279,14 +1283,40 @@ class ChromeCrawler(QWidget):
             elif base_price <= 100000:
                 bj_price = int(round(base_price * 1.2))
             else:
-                bj_price = base_price
+                bj_price = int(round(base_price * 1.15))
 
         # BL = BJ * 1.05
         bl_price = int(round(bj_price * 1.05)) if bj_price > 0 else 0
 
         today_str = today_iso()
 
-        # ==== 3) A~Z 채우기 ====
+        # ==== 2-1) 카테고리 엑셀 C~J 열 메타 가져오기  🔹 ====
+        meta_values = [""] * 8  # C~J 8개 → J~Q 8개
+
+        try:
+            cid = (self.coupang_category_id or "").strip()
+            if cid:
+                row = get_category_row_by_id(cid)
+                if row is not None:
+                    meta_values = [
+                        safe_str(row.get("col_c")),
+                        safe_str(row.get("col_d")),
+                        safe_str(row.get("col_e")),
+                        safe_str(row.get("col_f")),
+                        safe_str(row.get("col_g")),
+                        safe_str(row.get("col_h")),
+                        safe_str(row.get("col_i")),
+                        safe_str(row.get("col_j")),
+                    ]
+                else:
+                    self._log(f"ℹ️ 카테고리 마스터에서 category_id={cid} 행을 찾지 못했습니다. (C~J는 공란으로 둡니다.)")
+            else:
+                self._log("ℹ️ coupang_category_id 가 없어 C~J 메타를 채우지 않습니다.")
+        except Exception as e:
+            self._log(f"⚠️ 카테고리 엑셀 메타 조회 중 오류: {e}")
+
+
+        # ==== 3) A~I 채우기 ====
         # A열: 카테고리 엔진 결과 "[category_id] category_path" 형식으로 기록
         cat_cell = ""
         try:
@@ -1307,10 +1337,18 @@ class ChromeCrawler(QWidget):
         ws.cell(row=row_idx, column=8).value  = first_word # H
         ws.cell(row=row_idx, column=9).value  = ""         # I
 
-        for col in range(10, 27):                          # J~Z
+         # ==== 4) J~Q: 카테고리 엑셀 C~J 복사  🔹 ====
+        col_J = column_index_from_string("J")
+        for offset, val in enumerate(meta_values):
+            ws.cell(row=row_idx, column=col_J + offset).value = val
+
+        # ==== 5) R~Z 나머지는 공란으로 채우기 (기존 J~Z 전체 클리어 대신) 🔹 ====
+        col_R = column_index_from_string("R")
+        col_Z = column_index_from_string("Z")
+        for col in range(col_R, col_Z + 1):
             ws.cell(row=row_idx, column=col).value = ""
 
-        # ==== 4) 확장 열 채우기 ====
+        # ==== 6) 확장 열(BJ/BL/BM/BN/BX/CK/CZ/DC) 채우기 ====
         col_BJ = column_index_from_string("BJ")
         col_BL = column_index_from_string("BL")
         col_BM = column_index_from_string("BM")
