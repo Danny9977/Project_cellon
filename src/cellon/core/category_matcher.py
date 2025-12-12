@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Callable
 
 import pandas as pd
-import difflib 
+import difflib
+import re
 
 from cellon.category_ai.category_loader import load_category_master
 from cellon.core.rules_loader import (
@@ -14,8 +15,6 @@ from cellon.core.rules_loader import (
     list_available_groups,
     load_all_market_groups,
 )
-
-import re
 
 from cellon.category_ai.category_llm import (
     suggest_category_with_candidates,
@@ -38,7 +37,7 @@ class CategoryMatcher:
         manual_resolver: Optional[
             Callable[[str, str, pd.DataFrame], Optional[Dict[str, Any]]]
         ] = None,
-    ) -> None:   
+    ) -> None:
         """
         Parameters
         ----------
@@ -51,7 +50,7 @@ class CategoryMatcher:
 
         # UI에서 넘겨주는 logger (예: ChromeCrawler._log)
         self._logger = logger
-        
+
         # 수동 해결기 (디버깅/테스트용)
         self._manual_resolver = manual_resolver
 
@@ -70,7 +69,7 @@ class CategoryMatcher:
         self._log(f"  - meta_rules: {len(self.meta_rules)}개")
         self._log(f"  - coupang_rules: {len(self.coupang_rules)}개")
         self._log(f"  - market_trees: {list(self.market_trees.keys())}")
-        
+
     # 내부용 로그 헬퍼
     def _log(self, msg: str) -> None:
         try:
@@ -79,7 +78,7 @@ class CategoryMatcher:
         except Exception:
             # logger 쪽 문제로 매칭이 죽지 않도록 방어
             pass
-    
+
     # ------------------------------------------------------------------
     # 헬퍼: 사용 가능한 group 목록 확인
     # ------------------------------------------------------------------
@@ -116,7 +115,7 @@ class CategoryMatcher:
 
         # 1) path 기준으로 먼저 매칭
         self._log("  ▶ 1단계: path 완전 일치 매칭 시도")
-        
+
         for meta_key, rule in self.meta_rules.items():
             if source == "costco":
                 paths = rule.get("source_costco_paths", [])
@@ -145,7 +144,7 @@ class CategoryMatcher:
                 continue
 
             self._log(f"    - meta_key={meta_key} / include={inc} / exclude={exc}")
-            
+
             if any(k in name_lower for k in inc) and not any(k in name_lower for k in exc):
                 self._log(f"  ✅ 키워드 매칭 성공: meta_key={meta_key}")
                 return meta_key
@@ -154,7 +153,40 @@ class CategoryMatcher:
         return None
 
     # ------------------------------------------------------------------
-    # 2) 외부에서 사용하는 진입점
+    # 2) meta_key/candidate_ids 가 없을 때 수동 선택용 fallback 후보 생성
+    # ------------------------------------------------------------------
+    def _fallback_candidates_for_manual(self, meta_key: Optional[str]) -> pd.DataFrame:
+        """
+        meta_key 가 없거나, coupang_category_ids 가 비었을 때
+        사람에게 보여줄 '괜찮은 범위의 후보 df'를 만든다.
+        """
+        df = self.cat_master
+
+        # 1) meta_key 가 있으면, meta_rules[label] 기반으로 1차 필터
+        if meta_key and meta_key in self.meta_rules:
+            try:
+                label = str(self.meta_rules.get(meta_key, {}).get("label") or "")
+            except Exception:
+                label = ""
+
+            if label:
+                col = df["category_path"].astype(str)
+                subset = df[col.str.startswith(label)]
+                if not subset.empty:
+                    return subset
+
+        # 2) group에 따라 대분류로 한 번 더 줄이기 (예: kitchen → '주방용품>')
+        if self.group == "kitchen":
+            col = df["category_path"].astype(str)
+            subset = df[col.str.startswith("주방용품>")]
+            if not subset.empty:
+                return subset
+
+        # 3) 최후의 보루: 전체 cat_master (조심해서 사용)
+        return df
+
+    # ------------------------------------------------------------------
+    # 3) 외부에서 사용하는 진입점
     # ------------------------------------------------------------------
     def match_category(
         self,
@@ -178,21 +210,21 @@ class CategoryMatcher:
         흐름:
         1) meta 룰로 meta_key 추론
         2) meta_key -> coupang_rules[group] 에서 candidate_ids 추출
-        3) 후보가 0개면 → 전체 cat_master 를 LLM 에 그대로 넘김
+        3) 후보가 0개면 → (수동 선택 기회 + strong_name_rules) 후 전체 cat_master 를 LLM 에 넘김
         4) 후보가 1개면 → 바로 선택
         5) 후보가 여러 개면 → 제한된 candidates_df 만 LLM 에 넘김
         """
-        
+
         self._log("════════════════════════════════════════")
         self._log("[CategoryMatcher] match_category 시작")
         self._log(f"  - group={self.group}")
         self._log(f"  - source={source}")
         self._log(f"  - source_category_path='{source_category_path}'")
         self._log(f"  - product_name='{product_name}'")
-        
+
         meta_key = self._infer_meta_key(source, source_category_path, product_name)
 
-        # --- 1차 룰 매칭 실패: meta_key 자체가 없어도 strong_name_rule 물어보기 ---
+        # --- 1차 룰 매칭 실패: meta_key 자체가 없어도 strong_name_rule / 수동 선택 기회 제공 ---
         if meta_key is None:
             self._log("  ▶ meta_key=None → 1차 룰 매칭 실패")
 
@@ -228,7 +260,7 @@ class CategoryMatcher:
                 )
                 return strong_result
 
-            # ✅ 0-2) strong 후보들에 대해 수동 선택 기회 제공
+            # 0-2) strong 후보들에 대해 수동 선택 기회 제공
             if (
                 self._manual_resolver is not None
                 and strong_candidates_df is not None
@@ -250,11 +282,38 @@ class CategoryMatcher:
                     )
                     return manual
                 self._log(
-                    "  ▶ 수동 선택 없음 또는 "
-                    "'LLM에게 맡기기' 선택 → 전체 LLM 진행"
+                    "  ▶ strong 후보 수동 선택 없음 또는 "
+                    "'LLM에게 맡기기' 선택 → fallback 후보 사용"
                 )
 
-            # (원래 있던 전체 LLM 호출은 이 아래로 내려감)
+            # ✅ 0-3) strong_name_rules 도 없으면, fallback 후보라도 만들어서 수동 선택 한 번 더 시도
+            if self._manual_resolver is not None:
+                fallback_df = self._fallback_candidates_for_manual(meta_key=None)
+                if fallback_df is not None and not fallback_df.empty:
+                    self._log(
+                        f"  ▶ meta_key 없음 → fallback 후보 {len(fallback_df)}개에 대해 수동 선택 요청"
+                    )
+                    manual = self._manual_resolver(
+                        product_name,
+                        source_category_path,
+                        fallback_df,
+                    )
+                    if manual is not None:
+                        manual.setdefault("used_llm", False)
+                        manual.setdefault("meta_key", None)
+                        manual.setdefault("num_candidates", len(fallback_df))
+                        self._log(
+                            "  🔚 fallback 수동 선택 결과 사용 "
+                            "(meta_key=None, LLM 미호출): "
+                            f"{manual}"
+                        )
+                        return manual
+                    self._log(
+                        "  ▶ fallback 수동 선택 없음 또는 'LLM에게 맡기기' 선택 "
+                        "→ 전체 cat_master LLM 검색 모드"
+                    )
+
+            # (최종) 전체 LLM 호출
             self._log("  ▶ strong_name_rules/수동 선택 실패 → 전체 cat_master LLM 검색 모드")
             self._log(f"    - 전체 카테고리 수: {len(self.cat_master)}")
 
@@ -271,13 +330,13 @@ class CategoryMatcher:
             self._log(f"  🔚 LLM 결과 수신 (meta_key=None): {llm_result}")
             return llm_result
 
-
+        # ---------------- meta_key 있는 경우 ----------------
         self._log(f"  ▶ meta_key 추론 성공: {meta_key}")
         coupang_rule = self.coupang_rules.get(meta_key, {})
         candidate_ids = coupang_rule.get("coupang_category_ids", []) or []
         self._log(f"    - coupang_rule.coupang_category_ids = {candidate_ids}")
 
-        # meta_key는 있는데, 거기에 매핑된 후보가 없으면 → 전체 LLM 검색
+        # meta_key는 있는데, 거기에 매핑된 후보가 없으면
         # 1) strong_name_rules 재시도
         # 2) 수동 선택(UI) 기회 부여
         # 3) 그래도 안 되면 전체 LLM 검색
@@ -298,7 +357,7 @@ class CategoryMatcher:
                     }
                 )
                 self._log(
-                    " strong_name_rules 결과 사용 "
+                    "  🔚 strong_name_rules 결과 사용 "
                     "(candidate_ids 없음, LLM 미호출): "
                     f"{strong_result}"
                 )
@@ -327,12 +386,12 @@ class CategoryMatcher:
                         cat_paths.str.contains(label_norm)
                     ]
 
-                # label 기반 필터 결과가 없으면, 어쩔 수 없이 전체 cat_master 사용
+                # label 기반 필터 결과가 없으면, group 기반 fallback 사용
                 if candidates_df is None or candidates_df.empty:
-                    candidates_df = self.cat_master
+                    candidates_df = self._fallback_candidates_for_manual(meta_key)
 
                 self._log(
-                    " ▶ meta_key={meta_key}, candidate_ids 없음 → "
+                    f" ▶ meta_key={meta_key}, candidate_ids 없음 → "
                     f"수동 선택 후보 {len(candidates_df)}개"
                 )
 
@@ -347,7 +406,7 @@ class CategoryMatcher:
                     manual.setdefault("meta_key", meta_key)
                     manual.setdefault("num_candidates", len(candidates_df))
                     self._log(
-                        " 수동 선택 결과 사용 "
+                        "  🔚 수동 선택 결과 사용 "
                         "(candidate_ids 없음, LLM 미호출): "
                         f"{manual}"
                     )
@@ -358,7 +417,7 @@ class CategoryMatcher:
                     "→ 전체 cat_master LLM 검색"
                 )
 
-            # 2) 최종 fallback: 기존처럼 전체 LLM 호출
+            # 2) 최종 fallback: 전체 LLM 호출
             self._log(" ▶ candidate_ids 없음 → 전체 cat_master LLM 검색 모드")
             self._log(f" - 전체 카테고리 수: {len(self.cat_master)}")
 
@@ -371,9 +430,10 @@ class CategoryMatcher:
             llm_result.setdefault("used_llm", True)
             llm_result.setdefault("meta_key", meta_key)
             llm_result.setdefault("num_candidates", None)
-            self._log(f" LLM 결과 수신 (candidate_ids 없음): {llm_result}")
+            self._log(f"  🔚 LLM 결과 수신 (candidate_ids 없음): {llm_result}")
             return llm_result
 
+        # ---------------- candidate_ids 있는 경우 ----------------
 
         # 쿠팡 카테고리 마스터에서 후보 필터링
         candidates_df = self.cat_master[
@@ -396,7 +456,6 @@ class CategoryMatcher:
             )
             self._log(f"  🔚 strong_name_rules 결과 사용 (LLM 미호출): {strong_result}")
             return strong_result
-
 
         # 1차: leaf 완전 일치 룰
         leaf_result = self._pick_by_leaf_keyword(
@@ -429,7 +488,7 @@ class CategoryMatcher:
             self._log(f"  🔚 단일 후보 자동 선택 (LLM 미호출): {result}")
             return result
 
-        # 🔹 3차: 후보가 2개 이상 → 먼저 사람에게 물어보기
+        # 3차: 후보가 2개 이상 → 먼저 사람에게 물어보기
         if self._manual_resolver is not None and not candidates_df.empty:
             self._log("  ▶ 수동 카테고리 선택 콜백 호출 (LLM 이전 단계)")
             manual = self._manual_resolver(
@@ -446,7 +505,7 @@ class CategoryMatcher:
                 return manual
             self._log("  ▶ 수동 선택 없음 또는 'LLM에게 맡기기' 선택 → LLM 진행")
 
-        # 🔹 4차: 그래도 결정 안되면 LLM에게
+        # 4차: 그래도 결정 안되면 LLM에게
         self._log(f"  ▶ 후보 {len(candidates_df)}개 → 제한된 후보만 LLM에 전달")
         llm_raw = suggest_category_with_candidates(
             product_name=product_name,
@@ -464,11 +523,7 @@ class CategoryMatcher:
         self._log(f"  🔚 LLM 결과 수신 (제한 후보): {llm_raw}")
         return llm_raw
 
-
-
-    
     # ======= 내부 헬퍼: leaf 정규화 및 매칭 =======
-        # ======= 내부 헬퍼: leaf 정규화 및 매칭 =======
     @staticmethod
     def _normalize_leaf_text(text: str) -> str:
         """
@@ -601,8 +656,8 @@ class CategoryMatcher:
             )
 
         return None
-    
-    # --------- ----- 내부 헬퍼: 강제 name 룰 매칭 ---------
+
+    # --------- 내부 헬퍼: 강제 name 룰 매칭 ---------
     def _pick_by_strong_keyword(
         self,
         product_name: str,
@@ -634,7 +689,7 @@ class CategoryMatcher:
             if not target_id:
                 continue
 
-            # 현재 meta_key에서 뽑힌 후보들 안에 target_id가 없으면 스킵
+            # 현재 후보들 안에 target_id가 없으면 스킵
             if target_id not in candidate_ids:
                 continue
 
@@ -677,4 +732,3 @@ class CategoryMatcher:
                 )
 
         return None
-

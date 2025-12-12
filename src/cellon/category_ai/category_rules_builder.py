@@ -57,32 +57,58 @@ def build_coupang_rules_for_all_groups(df: pd.DataFrame | None = None) -> None:
     - category_master.pkl 을 읽거나(df가 주어지면 그대로 사용)
     - GROUP_RULE_CONFIG 에 정의된 모든 group 에 대해
       cellon/rules/coupang/{group}_rules.json 을 자동 생성/갱신.
+    - 기존 파일에 있던 "__strong_name_rules__" 는 그대로 보존한다.
     """
     # 1) df 없으면 pkl 로드
     if df is None:
         df = load_category_master()
 
     # 2) 프로젝트 루트 및 coupang rules 디렉토리
-    project_root = Path(__file__).resolve().parents[2]  # .../Project_cellon
+    project_root = Path(__file__).resolve().parents[2]  # .../Project_cellon (현재 구조 기준)
     coupang_rules_dir = project_root / "cellon" / "rules" / "coupang"
     coupang_rules_dir.mkdir(parents=True, exist_ok=True)
 
     for group, meta_config in GROUP_RULE_CONFIG.items():
-        rules: dict[str, dict] = {}
+        new_rules: dict[str, dict] = {}
 
+        # 1) meta_* 룰 새로 계산
         for meta_key, path_substrings in meta_config.items():
             ids = _collect_ids_for_paths(df, path_substrings)
-            rules[meta_key] = {
+            new_rules[meta_key] = {
                 "coupang_category_ids": ids,
                 "priority": 100,
             }
-            print(f"[rules_builder] group={group}, meta_key={meta_key}, 매칭된 카테고리 수={len(ids)}")
+            print(
+                f"[rules_builder] group={group}, meta_key={meta_key}, "
+                f"매칭된 카테고리 수={len(ids)}"
+            )
 
         out_path = coupang_rules_dir / f"{group}_rules.json"  # kitchen → kitchen_rules.json
-        with out_path.open("w", encoding="utf-8") as f:
-            json.dump(rules, f, ensure_ascii=False, indent=2)
 
-        print(f"✅ {group}_rules.json 생성/갱신 완료 → {out_path}")
+        # 2) 기존 strong_name_rules 보존
+        existing: dict = {}
+        if out_path.exists():
+            try:
+                with out_path.open("r", encoding="utf-8") as f:
+                    existing = json.load(f) or {}
+                if not isinstance(existing, dict):
+                    existing = {}
+            except Exception:
+                existing = {}
+
+        STRONG_KEY = "__strong_name_rules__"
+        if STRONG_KEY in existing:
+            # 기존 strong_name_rules 그대로 붙여넣기
+            new_rules[STRONG_KEY] = existing[STRONG_KEY]
+
+        # 3) 최종 저장
+        with out_path.open("w", encoding="utf-8") as f:
+            json.dump(new_rules, f, ensure_ascii=False, indent=2)
+
+        print(
+            f"✅ {group}_rules.json 생성/갱신 완료 "
+            f"(strong_name_rules 보존) → {out_path}"
+        )
 
 
 def main():
