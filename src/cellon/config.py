@@ -10,7 +10,6 @@ from datetime import datetime
 CELLON_PACKAGE_DIR = Path(__file__).resolve().parent          # .../src/cellon
 SRC_DIR = CELLON_PACKAGE_DIR.parent                           # .../src
 PROJECT_ROOT = SRC_DIR.parent                                 # .../Cellon_Project
-
 ASSETS_DIR = PROJECT_ROOT / "assets"
 
 # ====== category_ai 에서 카테고리 엑셀 파일 경로 ==========
@@ -27,8 +26,17 @@ CRAWLING_TEMP_DIR = ASSETS_DIR / "crawling_temp"
 CRAWLING_TEMP_IMAGE_DIR = CRAWLING_TEMP_DIR / "image"   # 캡처 이미지
 CRAWLING_TEMP_EXCEL_DIR = CRAWLING_TEMP_DIR / "excel"   # 엑셀 (있다면)
 
+# ▶ 추가: 쿠팡 셀러툴 업로드 폼 루트
+COUPANG_UPLOAD_FORM_DIR = CRAWLING_TEMP_DIR / "coupang_upload_form"
+
 # 업로드용 폴더
 UPLOAD_READY_DIR = CRAWLING_TEMP_DIR / "upload_ready"
+
+
+# =========== test ============
+# ✅ 추가: 쿠팡 업로드 템플릿 인덱스 JSON 경로
+COUPANG_UPLOAD_INDEX_JSON = CACHE_DIR / "coupang_upload_index.json"
+SELLERTOOL_SHEET_NAME = "data"
 
 # 배경 이미지 (지금 쓰는 1000x1000)
 PRODUCT_BG_IMAGE_PATH = ASSETS_DIR / "image" / "bg" / "product_bg_1000.jpg"
