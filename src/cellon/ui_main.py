@@ -67,10 +67,12 @@ from .category_ai.category_llm import _extract_keywords
 from .category_ai.category_loader import get_category_row_by_id
 
 # 시트/쿠팡 API: 분리된 모듈
-from .sheets_client import (
-    SheetsClient,
-    _cp_request,
-    extract_paid_price_from_item,
+from .sheets_client import SheetsClient, extract_paid_price_from_item
+from .apis.coupang_client import (
+    load_coupang_keys,
+    cp_request,
+    build_ordersheets_params,
+    try_ordersheets_with_variants,
 )
 
 # 이미지 후처리 (배경제거 + 배경 합성)
@@ -80,7 +82,26 @@ from .image_process import process_captured_folder   # 🔹 추가
 
 # ============= 중복이기는 한데, 너무 많이 가져와야 해서 그냥 중복상태로 둠 ==========
 # ui_main.py – config 및 category_ai
-from .config import *  # 가능하면 * 대신 필요한 것만 가져오는 쪽으로 나중에 정리
+#from .config import *  # 가능하면 * 대신 필요한 것만 가져오는 쪽으로 나중에 정리
+from .config import (
+    today_fmt,
+    label_for_domain,
+    _a1_col,
+    digits_only,
+    is_macos,
+    CATEGORY_EXCEL_DIR,
+    CRAWLING_TEMP_IMAGE_DIR,
+    PRODUCT_BG_IMAGE_PATH,
+    SELLERTOOL_XLSM_PATH,
+    SERVICE_ACCOUNT_JSON,
+    SHEET_ID,
+    WORKSHEET_NAME,
+    DEFAULT_LOOKBACK_DAYS,
+    UPLOAD_READY_DIR,
+    DEBUGGER_PORT,
+    CHROME_PATHS,
+    # ... 여기로 전부 모으세요 (DEBUGGER_PORT, CHROME_PATHS 등도 포함)
+)
 
 # ui_main.py – config 및 category_ai
 from .config import (
@@ -103,6 +124,10 @@ from .config import (
 
 # category_ai – 카테고리 매칭 모듈
 from .category_ai.category_worker import CategoryBuildWorker
+
+# sellertool_excel – 쿠팡 업로드 엑셀 생성 모듈 : 
+# coupang_upload_form 내 엑셀파일 로 부터 검색 시간 줄이기 위한 json 파일 생성 까지 완료 - ui 버튼 내 기능 연결 전
+from build_coupang_upload_index import build_coupang_upload_index
 
 
 # =========================
@@ -225,93 +250,6 @@ def extract_costco_category(driver) -> str | None:
         return None
 
 # =========================
-# 쿠팡 OpenAPI HMAC 서명 (성공 예제 기준)
-# =========================
-def _cp_build_query(params: dict | None) -> str:
-    if not params:
-        return ""
-    return urlencode(params, doseq=True)  # quote_plus 방식 (공백→+)
-
-
-def _cp_signed_headers_v2(
-    method: str,
-    path: str,
-    sign_query: str,
-    access_key: str,
-    secret_key: str,
-    *,
-    signed_date: str | None = None,
-    vendor_id: str | None = None
-) -> dict:
-    if signed_date is None:
-        signed_date = datetime.now(timezone.utc).strftime("%y%m%dT%H%M%SZ")  # YYMMDDTHHMMSSZ
-    message = f"{signed_date}{method.upper()}{path}{sign_query}"
-    signature = hmac.new(
-        secret_key.encode("utf-8"),
-        message.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
-    authorization = (
-        f"CEA algorithm=HmacSHA256, access-key={access_key}, "
-        f"signed-date={signed_date}, signature={signature}"
-    )
-    headers = {
-        "Content-Type": "application/json;charset=UTF-8",
-        "Authorization": authorization,
-    }
-    if vendor_id:
-        headers["X-Requested-By"] = vendor_id
-    return headers
-
-
-def _build_ordersheets_params(
-    date_from_utc: datetime,
-    date_to_utc: datetime,
-    status: str,
-    max_per_page: int = 50
-):
-    d_from = date_from_utc.strftime("%Y-%m-%d")
-    d_to = date_to_utc.strftime("%Y-%m-%d")
-    primary = {
-        "createdAtFrom": d_from,
-        "createdAtTo": d_to,
-        "status": status,
-        "maxPerPage": max_per_page,
-    }
-    fallback = {
-        "startTime": d_from,
-        "endTime": d_to,
-        "status": status,
-        "maxPerPage": max_per_page,
-    }
-    return [primary, fallback]
-
-
-def _try_ordersheets_with_variants(path: str, param_variants: list[dict]) -> dict:
-    last_err = None
-    for params in param_variants:
-        try:
-            return _cp_request("GET", path, params)
-        except requests.HTTPError as e:
-            resp = getattr(e, "response", None)
-            status = getattr(resp, "status_code", None)
-            body = ""
-            try:
-                body = (resp.text or "")[:500]
-            except Exception:
-                pass
-            if status == 400 and "yyyy-MM-dd" in body:
-                last_err = e
-                continue
-            raise
-        except Exception as e:
-            last_err = e
-            continue
-    if last_err:
-        raise last_err
-    raise RuntimeError("ordersheets 호출 시도 실패: 유효한 파라미터 조합이 없습니다.")
-
-# =========================
 # 카테고리 마스터 생성 (QThread)
 # =========================
 def start_category_build(self):
@@ -422,14 +360,18 @@ class CategorySelectDialog(QDialog):
         self.btn_use_llm = QPushButton("LLM에게 맡기기")
         self.btn_use_llm.clicked.connect(self._on_use_llm)
 
-        self.btn_cancel = QPushButton("취소")
+        self.btn_cancel = QPushButton("취소 → LLM")
         self.btn_cancel.clicked.connect(self.reject)
+
+        self.btn_pass = QPushButton("취소 → 선택하지 않기")
+        self.btn_pass.clicked.connect(self._on_pass_through)
 
         self.btn_ok = QPushButton("선택")
         self.btn_ok.clicked.connect(self._on_ok_clicked)
 
         btn_row.addWidget(self.btn_use_llm)
         btn_row.addWidget(self.btn_cancel)
+        btn_row.addWidget(self.btn_pass)
         btn_row.addWidget(self.btn_ok)
         layout.addLayout(btn_row)
 
@@ -484,6 +426,12 @@ class CategorySelectDialog(QDialog):
     def _on_item_double_clicked(self, item: QListWidgetItem):
         # 더블클릭 == 선택
         self._on_ok_clicked()
+
+    def _on_pass_through(self):
+        # 수동 선택 자체를 하지 않고 빠져나감(상위 로직에서 구분 가능하게)
+        self._use_llm = False
+        self.done(2)  # 커스텀 결과 코드(원하시면 reject/accept로 통일해도 됩니다)
+
 
     # ------------------------------------------------------------------
     # 검색 관련 로직
@@ -804,18 +752,27 @@ class ChromeCrawler(QWidget):
         # percent 를 앞에 붙여서 로그 표시
         self._log(f"[카테고리] {percent}% - {message}")
 
+    # ---- 콜백: 카테고리 빌드 완료 ----
     def _on_category_finished(self, df):
-        """
-        워커가 정상 완료되었을 때 호출.
-        df 는 category_master DataFrame.
-        """
         self.category_worker = None
         self.category_master_df = df
+
         try:
             n = len(df) if df is not None else 0
         except Exception:
             n = 0
+
         self._log(f"✅ 카테고리 마스터 생성 완료 (총 {n}개 카테고리)")
+
+        # 🔹 coupang_upload_form 템플릿 인덱스 생성 (딱 1회)
+        try:
+            build_coupang_upload_index()
+            self._log(
+                "ℹ️ coupang_upload_form 내의 쿠팡 셀러툴 템플릿 구조를 분석했습니다."
+            )
+        except Exception as e:
+            self._log(f"⚠️ 쿠팡 셀러툴 템플릿 인덱스 생성 실패: {e}")
+
 
     def _on_category_error(self, msg: str):
         """
@@ -824,7 +781,6 @@ class ChromeCrawler(QWidget):
         self.category_worker = None
         self._log(f"❌ 카테고리 마스터 생성 중 오류: {msg}")
 
-    
     # ---------- 구글시트 연결 ----------
     def connect_sheets(self):
         """구글시트 연결 버튼 동작용 메서드"""
@@ -1254,6 +1210,14 @@ class ChromeCrawler(QWidget):
                         brand=None,
                         extra_text=None,
                     )
+
+                    # ✅ 스킵(선택 안 함) 처리
+                    if isinstance(match, dict) and match.get("skipped") is True:
+                        self._log("⏭️ 카테고리 매칭 스킵 플래그 감지 → 이후 처리(LLM 포함) 생략")
+                        self.coupang_category_id = ""
+                        self.coupang_category_path = ""
+                        # 필요하면 여기서 record_data()는 계속 할지/말지 정책 결정
+                        # return  # 완전 중단할 거면 이렇게 해도 됨
 
                     if not match:
                         self._log("  ❌ CategoryMatcher가 None 또는 빈 dict를 반환했습니다.")
@@ -2416,7 +2380,7 @@ class ChromeCrawler(QWidget):
             from_dt = to_dt - timedelta(days=1)  # 헬스체크는 간단히 최근 1일로 확인
             path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets"
             param_variants = _build_ordersheets_params(from_dt, to_dt, status="ACCEPT", max_per_page=1)
-            data = _try_ordersheets_with_variants(path, param_variants)
+            data = try_ordersheets_with_variants(path, param_variants)
             code = str(data.get("code", "")).upper()
             self._log(f"✅ 헬스체크 성공: path='{path}', params={param_variants[0]} (code={code or 'N/A'})")
             self._log("🟢 쿠팡 API 키/서명/경로 정상으로 보입니다.")
@@ -2867,148 +2831,6 @@ class ChromeCrawler(QWidget):
         except Exception as e:
             self._log(f"⚠️ 브라우저 fetch base64 디코딩 실패: {e}")
             return None
-    
-    # === 카테고리 수동 선택 다이얼로그 ===
-    def _resolve_category_manually(
-        self,
-        product_name: str,
-        source_category_path: str,
-        candidates_df: pd.DataFrame,
-    ) -> Optional[dict]:
-        """
-        CategoryMatcher에서 호출하는 콜백.
-        - 후보 카테고리를 UI로 보여주고
-        - 사용자가 하나를 고르면 dict를 리턴
-        - 'LLM에게 맡기기'를 누르면 None 리턴
-        + 사용자가 선택한 카테고리를 기준으로 strong_name_rules 를 실제 JSON에 저장
-        """
-        if candidates_df is None or candidates_df.empty:
-            return None
-
-        # 1차: 카테고리 선택 다이얼로그
-        dlg = QDialog(self)
-        dlg.setWindowTitle("카테고리 수동 선택")
-        layout = QVBoxLayout(dlg)
-
-        info = QLabel(
-            f"상품명: {product_name}\n"
-            f"원본 카테고리: {source_category_path}\n\n"
-            "아래 후보 중 하나를 선택하거나, LLM에게 맡길 수 있습니다."
-        )
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        lst = QListWidget()
-        for _, row in candidates_df.iterrows():
-            cid = str(row["category_id"])
-            path = str(row["category_path"])
-            text = f"[{cid}] {path}"
-            item = QListWidgetItem(text)
-            item.setData(Qt.ItemDataRole.UserRole, {"category_id": cid, "category_path": path})
-            lst.addItem(item)
-        layout.addWidget(lst)
-
-        btn_row = QHBoxLayout()
-        btn_ok = QPushButton("선택")
-        btn_llm = QPushButton("LLM에게 맡기기")
-        btn_cancel = QPushButton("취소")
-
-        btn_row.addWidget(btn_ok)
-        btn_row.addWidget(btn_llm)
-        btn_row.addWidget(btn_cancel)
-        layout.addLayout(btn_row)
-
-        result = {"mode": None, "data": None}
-
-        def on_ok():
-            item = lst.currentItem()
-            if not item:
-                self._log("ℹ️ 카테고리를 선택하지 않았습니다.")
-                return
-            result["mode"] = "manual"
-            result["data"] = item.data(Qt.ItemDataRole.UserRole)
-            dlg.accept()
-
-        def on_llm():
-            result["mode"] = "llm"
-            dlg.accept()
-
-        def on_cancel():
-            result["mode"] = "llm"   # 취소도 LLM에게 넘기는 쪽으로 처리
-            dlg.reject()
-
-        btn_ok.clicked.connect(on_ok)
-        btn_llm.clicked.connect(on_llm)
-        btn_cancel.clicked.connect(on_cancel)
-
-        dlg.exec()
-
-        # LLM 에게 넘기는 경우: 기존과 동일하게 None 리턴
-        if result["mode"] != "manual" or not result["data"]:
-            self._log("ℹ️ 수동 선택 없음 → LLM에게 맡깁니다.")
-            return None
-
-        # 여기부터는 사용자가 카테고리를 직접 선택한 경우
-        cid = result["data"]["category_id"]
-        cpath = result["data"]["category_path"]
-        self._log(f"✅ 수동으로 카테고리 선택: [{cid}] {cpath}")
-
-        # 🔹 strong_name_rules 후보 키워드 계산
-        kw_candidates = _extract_keywords(product_name, brand=None, extra=None)
-
-        strong_ks: list[str] = []
-        for kw in kw_candidates:
-            kw_strip = (kw or "").strip()
-            if len(kw_strip) < 2:
-                continue
-            if kw_strip.isdigit():
-                continue
-            if kw_strip not in strong_ks:
-                strong_ks.append(kw_strip)
-
-        if strong_ks:
-            # 2차: strong_name_rules 에 넣을 키워드 multi-select 다이얼로그
-            selected_kw = self._ask_keywords_for_strong_rule(strong_ks)
-
-            if selected_kw:
-                # group 은 kitchen/food/beauty 등 → CategoryMatcher 에서 이미 보관 중
-                group = getattr(self.cat_matcher, "group", "kitchen")
-
-                reason = f"사용자 수동 선택 기반 강제 룰 (source={source_category_path}, name={product_name})"
-
-                upsert_strong_name_rule(
-                    group=group,
-                    target_category_id=cid,
-                    keywords=selected_kw,
-                    reason=reason,
-                )
-                
-                # upsert_strong_name_rule 호출 뒤에 캐시 갱신
-                self.cat_matcher.coupang_rules = load_coupang_rules(group)
-
-
-                self._log("💾 strong_name_rules JSON 업데이트 완료:")
-                for k in selected_kw:
-                    self._log(f'   - "{k}" → category_id={cid}')
-
-                self._log(
-                    "👉 이후부터 이 키워드들은 "
-                    f"'{group}_rules.json' 의 __strong_name_rules__ 를 통해 "
-                    "해당 카테고리로 강제 매칭됩니다. "
-                    "(프로그램 재시작 후 확실하게 반영됩니다.)"
-                )
-            else:
-                self._log("ℹ️ strong_name_rules 에 추가할 키워드를 선택하지 않았습니다.")
-        else:
-            self._log("ℹ️ 이 상품에서 strong_name_rules 로 쓸만한 키워드를 찾지 못했습니다.")
-
-        # CategoryMatcher 가 요구하는 반환 형식 유지
-        return {
-            "category_id": cid,
-            "category_path": cpath,
-            "reason": "사용자가 UI에서 수동으로 선택했습니다.",
-        }
-
         
     # === strong_name_rules용 키워드 선택 다이얼로그 ===
     def _pick_strong_keyword_for_rule(self, keywords: list[str]) -> Optional[str]:
@@ -3207,49 +3029,235 @@ class ChromeCrawler(QWidget):
     # ==========================================================
     # 카테고리 수동 선택 콜백 (CategoryMatcher → UI)
     # ==========================================================
-    def _resolve_category_manually(self, product_name: str, source_category_path: str, candidates_df):
+    # === 카테고리 수동 선택 다이얼로그 ===
+    def _resolve_category_manually(
+        self,
+        product_name: str,
+        source_category_path: str,
+        candidates_df: pd.DataFrame,
+    ) -> Optional[dict]:
         """
-        CategoryMatcher 에서 meta/룰로 확정 못 했을 때 호출되는 UI 콜백.
-        - CategorySelectDialog 를 띄워 사용자가 직접 선택하게 함
-        - 'LLM에게 맡기기'나 닫기/취소 시에는 None 리턴 → LLM fallback.
+        CategoryMatcher에서 호출하는 콜백.
+        - 후보 카테고리를 UI로 보여주고
+        - 사용자가 하나를 고르면 dict를 리턴
+        - 'LLM에게 맡기기'를 누르면 None 리턴
+        + 사용자가 선택한 카테고리를 기준으로 strong_name_rules 를 실제 JSON에 저장
         """
-        try:
-            dlg = CategorySelectDialog(
-                product_name=product_name,
-                source_category_path=source_category_path,
-                candidates_df=candidates_df,
-                parent=self,
-            )
-        except Exception as e:
-            # 혹시라도 UI 생성 실패하면 LLM으로 바로 넘기도록
-            self._log(f"[카테고리] 수동 선택 다이얼로그 생성 실패: {e}")
+        if candidates_df is None or candidates_df.empty:
             return None
 
-        result_code = dlg.exec()
+        # 1차: 카테고리 선택 다이얼로그
+        dlg = QDialog(self)
+        dlg.setWindowTitle("카테고리 수동 선택")
+        layout = QVBoxLayout(dlg)
 
-        # 1) 사용자가 '선택'으로 종료한 경우만 dict 반환
-        if result_code == QDialog.DialogCode.Accepted:
-            result = dlg.selected_category()
-            if result is None:
-                # 이 경우도 결국 LLM으로 넘김
-                self._log("ℹ️ 수동 선택 창에서 선택값이 없어 LLM으로 위임합니다.")
-                return None
+        info = QLabel(
+            f"상품명: {product_name}\n"
+            f"원본 카테고리: {source_category_path}\n\n"
+            "아래 후보 중 하나를 선택하거나, LLM에게 맡길 수 있습니다."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
 
-            self._log(
-                f"✅ 수동 카테고리 선택: "
-                f"{result.get('category_id')} | {result.get('category_path')}"
+        # ---------- 🔍 검색창 + (우측) 이전/다음 ----------
+        search_row = QHBoxLayout()
+
+        search = QLineEdit()
+        search.setPlaceholderText("카테고리 검색 (예: 냄비, 프라이팬, 수납)")
+
+        btn_prev = QPushButton("이전")
+        btn_next = QPushButton("다음")
+        btn_prev.setFixedWidth(60)
+        btn_next.setFixedWidth(60)
+
+        search_row.addWidget(search, 1)   # 검색창이 넓게
+        search_row.addWidget(btn_prev)
+        search_row.addWidget(btn_next)
+
+        layout.addLayout(search_row)
+
+        # ---------- 리스트 ----------
+        lst = QListWidget()
+        layout.addWidget(lst)
+
+        # 원본 아이템 저장
+        all_items: list[QListWidgetItem] = []
+
+        for _, row in candidates_df.iterrows():
+            cid = str(row["category_id"])
+            path = str(row["category_path"])
+            text = f"[{cid}] {path}"
+
+            item = QListWidgetItem(text)
+            item.setData(
+                Qt.ItemDataRole.UserRole,
+                {"category_id": cid, "category_path": path},
             )
+            all_items.append(item)
+            lst.addItem(item)
 
-            # 여기서 strong_name_rule 보강 로직(_extract_keywords + upsert_strong_name_rule)
-            # 이미 기존에 구현하신 코드가 있다면, 그대로 호출해 주시면 됩니다.
-            # (예: self._update_strong_name_rules(product_name, result['category_id']))
+        # ---------- 검색 필터 ----------
+        def apply_filter():
+            keyword = search.text().strip().lower()
+            lst.clear()
 
-            return result
+            for item in all_items:
+                if not keyword or keyword in item.text().lower():
+                    lst.addItem(item)
 
-        # 2) 사용자가 'LLM에게 맡기기' 또는 '취소/닫기' 한 경우
-        if dlg.use_llm():
-            self._log("ℹ️ 사용자가 'LLM에게 맡기기'를 선택했습니다. → LLM fallback.")
+            if lst.count() > 0:
+                lst.setCurrentRow(0)
+
+        search.textChanged.connect(apply_filter)
+
+        # ---------- 이전 / 다음 ----------
+        def move_prev():
+            row = lst.currentRow()
+            if row > 0:
+                lst.setCurrentRow(row - 1)
+
+        def move_next():
+            row = lst.currentRow()
+            if row < lst.count() - 1:
+                lst.setCurrentRow(row + 1)
+
+        # 단축키
+        QShortcut(QKeySequence("Up"), dlg).activated.connect(move_prev)
+        QShortcut(QKeySequence("Down"), dlg).activated.connect(move_next)
+
+        # ---------- 버튼 ----------
+        btn_row = QHBoxLayout()
+        btn_ok = QPushButton("선택")
+        btn_llm = QPushButton("LLM에게 맡기기")
+        btn_cancel = QPushButton("취소->LLM")
+        btn_pass_through = QPushButton("취소 → 선택하지 않기")
+
+        btn_row.addStretch()
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_llm)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_pass_through)
+
+        layout.addLayout(btn_row)
+
+        btn_prev.clicked.connect(move_prev)
+        btn_next.clicked.connect(move_next)
+
+        result = {"mode": None, "data": None}
+
+        # ---------- 선택 처리 ----------
+        def on_ok():
+            item = lst.currentItem()
+            if not item:
+                self._log("ℹ️ 카테고리를 선택하지 않았습니다.")
+                return
+            result["mode"] = "manual"
+            result["data"] = item.data(Qt.ItemDataRole.UserRole)
+            dlg.accept()
+
+        def on_llm():
+            result["mode"] = "llm"
+            dlg.accept()
+
+        def on_cancel_to_llm():
+            result["mode"] = "llm"
+            dlg.reject()
+
+        def on_cancel_to_pass_through():
+            result["mode"] = "pass_through"
+            dlg.reject()
+            
+        def on_rejected_default():
+            if result["mode"] is None:
+                result["mode"] = "pass_through"
+                
+        dlg.rejected.connect(on_rejected_default)
+
+        btn_cancel.clicked.connect(on_cancel_to_llm)
+        btn_pass_through.clicked.connect(on_cancel_to_pass_through)
+
+        btn_ok.clicked.connect(on_ok)
+        btn_llm.clicked.connect(on_llm)
+
+        lst.itemDoubleClicked.connect(lambda _: on_ok()) # 더블클릭 → 선택
+        
+        # Enter 키 → 선택
+        QShortcut(QKeySequence(Qt.Key.Key_Return), dlg).activated.connect(on_ok)
+        QShortcut(QKeySequence(Qt.Key.Key_Enter), dlg).activated.connect(on_ok)
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), dlg).activated.connect(on_cancel_to_pass_through)
+
+        dlg.exec()
+
+        # LLM 에게 넘기는 경우: 기존과 동일하게 None 리턴
+        #     1) "throgh"인 경우: LLM로도 안 보내고 그냥 스킵
+        if result["mode"] == "pass_through":
+            self._log("⏭️ 카테고리 선택 안 함(패스) → LLM 실행 없이 건너뜁니다.")
+            return {"mode": "pass_through"} # <-- CategoryMatcher에서 처리 가능하도록 dict 반환 (아무것도 안하고 넘어감)
+    
+        #     2) manual 아니면: LLM로 넘김
+        if result["mode"] != "manual" or not result["data"]:
+            self._log("ℹ️ 수동 선택 없음 → LLM에게 맡깁니다.")
+            return None
+
+        # 여기부터는 사용자가 카테고리를 직접 선택한 경우
+        cid = result["data"]["category_id"]
+        cpath = result["data"]["category_path"]
+        self._log(f"✅ 수동으로 카테고리 선택: [{cid}] {cpath}")
+
+        # 🔹 strong_name_rules 후보 키워드 계산
+        kw_candidates = _extract_keywords(product_name, brand=None, extra=None)
+
+        strong_ks: list[str] = []
+        for kw in kw_candidates:
+            kw_strip = (kw or "").strip()
+            if len(kw_strip) < 2:
+                continue
+            if kw_strip.isdigit():
+                continue
+            if kw_strip not in strong_ks:
+                strong_ks.append(kw_strip)
+
+        if strong_ks:
+            # 2차: strong_name_rules 에 넣을 키워드 multi-select 다이얼로그
+            selected_kw = self._ask_keywords_for_strong_rule(strong_ks)
+
+            if selected_kw:
+                # group 은 kitchen/food/beauty 등 → CategoryMatcher 에서 이미 보관 중
+                group = getattr(self.cat_matcher, "group", "kitchen")
+
+                reason = f"사용자 수동 선택 기반 강제 룰 (source={source_category_path}, name={product_name})"
+
+                upsert_strong_name_rule(
+                    group=group,
+                    target_category_id=cid,
+                    keywords=selected_kw,
+                    reason=reason,
+                )
+                
+                # upsert_strong_name_rule 호출 뒤에 캐시 갱신
+                self.cat_matcher.coupang_rules = load_coupang_rules(group)
+
+
+                self._log("💾 strong_name_rules JSON 업데이트 완료:")
+                for k in selected_kw:
+                    self._log(f'   - "{k}" → category_id={cid}')
+
+                self._log(
+                    "👉 이후부터 이 키워드들은 "
+                    f"'{group}_rules.json' 의 __strong_name_rules__ 를 통해 "
+                    "해당 카테고리로 강제 매칭됩니다. "
+                    "(프로그램 재시작 후 확실하게 반영됩니다.)"
+                )
+            else:
+                self._log("ℹ️ strong_name_rules 에 추가할 키워드를 선택하지 않았습니다.")
         else:
-            self._log("ℹ️ 수동 카테고리 선택 취소 → LLM fallback.")
-        return None
+            self._log("ℹ️ 이 상품에서 strong_name_rules 로 쓸만한 키워드를 찾지 못했습니다.")
+
+        # CategoryMatcher 가 요구하는 반환 형식 유지
+        return {
+            "category_id": cid,
+            "category_path": cpath,
+            "reason": "사용자가 UI에서 수동으로 선택했습니다.",
+        }
+
 

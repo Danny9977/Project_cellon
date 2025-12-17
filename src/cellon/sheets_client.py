@@ -22,6 +22,15 @@ from .config import (
     FIXED_CONST_FEE, DEFAULT_LOOKBACK_DAYS
 )
 
+# APIs에서 필요한 함수 import
+from .apis.coupang_client import (
+    load_coupang_keys,
+    cp_request,
+    build_ordersheets_params,
+    try_ordersheets_with_variants,
+)
+
+
 def extract_money_amount(m: dict | None) -> int:
     if not isinstance(m, dict):
         return 0
@@ -82,104 +91,7 @@ def extract_paid_price_from_item(it: dict) -> int:
                     pass
     return 0
 
-def _cp_build_query(params: dict | None) -> str:
-    if not params:
-        return ""
-    return urlencode(params, doseq=True)
 
-def _cp_signed_headers_v2(method: str, path: str, sign_query: str,
-                          access_key: str, secret_key: str,
-                          *, signed_date: str | None = None, vendor_id: str | None = None) -> dict:
-    if signed_date is None:
-        signed_date = datetime.now(timezone.utc).strftime("%y%m%dT%H%M%SZ")
-    message = f"{signed_date}{method.upper()}{path}{sign_query}"
-    signature = hmac.new(
-        secret_key.encode("utf-8"),
-        message.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
-    authorization = (
-        f"CEA algorithm=HmacSHA256, access-key={access_key}, "
-        f"signed-date={signed_date}, signature={signature}"
-    )
-    headers = {
-        "Content-Type": "application/json;charset=UTF-8",
-        "Authorization": authorization,
-    }
-    if vendor_id:
-        headers["X-Requested-By"] = vendor_id
-    return headers
-
-def _cp_request(method: str, path: str, params: dict | None) -> dict:
-    try:
-        with open(COUPANG_KEYS_JSON, "r", encoding="utf-8") as f:
-            coupang_keys = json.load(f)
-            COUPANG_VENDOR_ID = (coupang_keys.get("vendor_id") or "").strip()
-            COUPANG_ACCESS_KEY = (coupang_keys.get("access_key") or "").strip()
-            COUPANG_SECRET_KEY = (coupang_keys.get("secret_key") or "").strip()
-    except Exception as e:
-        raise RuntimeError(f"쿠팡 키 파일을 불러오지 못했습니다: {e}")
-    if not (COUPANG_ACCESS_KEY and COUPANG_SECRET_KEY):
-        raise RuntimeError("쿠팡 API 키가 설정되지 않았습니다.")
-    url_query = _cp_build_query(params)
-    url = f"{COUPANG_BASE_URL}{path}" + (f"?{url_query}" if url_query else "")
-    try:
-        headers = _cp_signed_headers_v2(
-            method, path, url_query, COUPANG_ACCESS_KEY, COUPANG_SECRET_KEY,
-            vendor_id=COUPANG_VENDOR_ID
-        )
-        resp = requests.request(method=method, url=url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        return resp.json()
-    except requests.HTTPError as e:
-        body = ""
-        try:
-            body = resp.text[:1000]
-        except Exception:
-            pass
-        msg = f"{resp.status_code} {resp.reason}\nurl={url}\nresp_body={body}"
-        raise requests.HTTPError(msg, response=resp, request=resp.request) from e
-
-def _build_ordersheets_params(date_from_utc: datetime, date_to_utc: datetime, status: str, max_per_page: int = 50):
-    d_from = date_from_utc.strftime("%Y-%m-%d")
-    d_to   = date_to_utc.strftime("%Y-%m-%d")
-    primary = {
-        "createdAtFrom": d_from,
-        "createdAtTo": d_to,
-        "status": status,
-        "maxPerPage": max_per_page,
-    }
-    fallback = {
-        "startTime": d_from,
-        "endTime": d_to,
-        "status": status,
-        "maxPerPage": max_per_page,
-    }
-    return [primary, fallback]
-
-def _try_ordersheets_with_variants(path: str, param_variants: list[dict]) -> dict:
-    last_err = None
-    for params in param_variants:
-        try:
-            return _cp_request("GET", path, params)
-        except requests.HTTPError as e:
-            resp = getattr(e, "response", None)
-            status = getattr(resp, "status_code", None)
-            body = ""
-            try:
-                body = (resp.text or "")[:500]
-            except Exception:
-                pass
-            if status == 400 and "yyyy-MM-dd" in body:
-                last_err = e
-                continue
-            raise
-        except Exception as e:
-            last_err = e
-            continue
-    if last_err:
-        raise last_err
-    raise RuntimeError("ordersheets 호출 시도 실패: 유효한 파라미터 조합이 없습니다.")
 
 class SheetsClient:
     def __init__(self, json_path: str, sheet_id: str, worksheet_name: str, logger):

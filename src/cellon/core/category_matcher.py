@@ -272,6 +272,20 @@ class CategoryMatcher:
                     source_category_path,
                     strong_candidates_df,
                 )
+                
+                #-- 특별 처리: 사용자가 '선택하지 않기(pass_through)' 선택한 경우 --
+                if isinstance(manual, dict) and manual.get("mode") == "pass_through":
+                    self._log("⏭️ 사용자 선택: 선택하지 않기(pass_through) → LLM 없이 스킵")
+                    return {
+                        "category_id": None,
+                        "category_path": None,
+                        "reason": "사용자가 카테고리 선택을 건너뜀(pass_through)",
+                        "used_llm": False,
+                        "meta_key": None,
+                        "num_candidates": len(strong_candidates_df),
+                        "skipped": True,
+                    }
+                
                 if manual is not None:
                     manual.setdefault("used_llm", False)
                     manual.setdefault("meta_key", None)
@@ -298,6 +312,20 @@ class CategoryMatcher:
                         source_category_path,
                         fallback_df,
                     )
+                    
+                    #-- 특별 처리: 사용자가 '선택하지 않기(pass_through)' 선택한 경우 --
+                    if isinstance(manual, dict) and manual.get("mode") == "pass_through":
+                        self._log("⏭️ 사용자 선택: 선택하지 않기(pass_through) → LLM 없이 스킵")
+                        return {
+                            "category_id": None,
+                            "category_path": None,
+                            "reason": "사용자가 카테고리 선택을 건너뜀(pass_through)",
+                            "used_llm": False,
+                            "meta_key": None,
+                            "num_candidates": len(strong_candidates_df),
+                            "skipped": True,
+                        }
+                    
                     if manual is not None:
                         manual.setdefault("used_llm", False)
                         manual.setdefault("meta_key", None)
@@ -401,6 +429,20 @@ class CategoryMatcher:
                     candidates_df,
                 )
 
+                #-- 특별 처리: 사용자가 '선택하지 않기(pass_through)' 선택한 경우 --
+                if isinstance(manual, dict) and manual.get("mode") == "pass_through":
+                    self._log("⏭️ 사용자 선택: 선택하지 않기(pass_through) → LLM 없이 스킵")
+                    return {
+                        "category_id": None,
+                        "category_path": None,
+                        "reason": "사용자가 카테고리 선택을 건너뜀(pass_through)",
+                        "used_llm": False,
+                        "meta_key": None,
+                        "num_candidates": len(strong_candidates_df),
+                        "skipped": True,
+                    }
+                
+
                 if manual is not None:
                     manual.setdefault("used_llm", False)
                     manual.setdefault("meta_key", meta_key)
@@ -496,6 +538,20 @@ class CategoryMatcher:
                 source_category_path,
                 candidates_df,
             )
+            
+            #-- 특별 처리: 사용자가 '선택하지 않기(pass_through)' 선택한 경우 --
+            if isinstance(manual, dict) and manual.get("mode") == "pass_through":
+                self._log("⏭️ 사용자 선택: 선택하지 않기(pass_through) → LLM 없이 스킵")
+                return {
+                    "category_id": None,
+                    "category_path": None,
+                    "reason": "사용자가 카테고리 선택을 건너뜀(pass_through)",
+                    "used_llm": False,
+                    "meta_key": None,
+                    "num_candidates": len(strong_candidates_df),
+                    "skipped": True,
+                }
+                
             if manual is not None:
                 # manual 예: {"category_id":"80298", "category_path":"주방용품>...>웍", "reason":"사용자 수동 선택"}
                 manual.setdefault("used_llm", False)
