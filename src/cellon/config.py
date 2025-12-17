@@ -155,35 +155,6 @@ COUPANG_KEYS_JSON = ASSETS_DIR / "api" / "coupang_api" / "coupang_keys.json"
 # 조회 기본 기간(일)
 DEFAULT_LOOKBACK_DAYS = 7
 
-# 조회/표시할 상태: 결제완료 → 상품준비중 → 배송지시 → 배송중 → 배송완료
-CP_QUERY_STATUSES = ["ACCEPT", "INSTRUCT", "DEPARTURE", "DELIVERING", "DELIVERED"]
-
-# 시트에 적을 한글 상태 라벨
-CP_STATUS_MAP = {
-    "ACCEPT": "결제완료",
-    "INSTRUCT": "상품준비중",
-    "DEPARTURE": "배송지시",
-    "DELIVERING": "배송중",
-    "DELIVERED": "배송완료",
-}
-
-# API별 상태 이름 별칭
-ORDER_STATUS_ALIASES = {
-    "ACCEPT": ["ACCEPT", "PAID", "PAYMENT_COMPLETED", "ORDER_COMPLETE"],
-    "INSTRUCT": ["INSTRUCT", "READY", "READY_FOR_DELIVERY", "PREPARE_SHIPMENT"],
-    "DEPARTURE": ["DEPARTURE", "DELIVERY_REQUESTED", "SHIPPING_READY"],
-    "DELIVERING": ["DELIVERING"],
-    "DELIVERED": ["DELIVERED", "DELIVERY_COMPLETED", "DONE", "FINAL_DELIVERY"],
-}
-
-STATUS_ORDER = {
-    "결제완료": 0,
-    "상품준비중": 1,
-    "배송지시": 2,
-    "배송중": 3,
-    "배송완료": 4,
-}
-
 
 # =========================
 # 유틸 함수들

@@ -100,6 +100,7 @@ from .config import (
     UPLOAD_READY_DIR,
     DEBUGGER_PORT,
     CHROME_PATHS,
+    COUPANG_WS_NAME,
     # ... 여기로 전부 모으세요 (DEBUGGER_PORT, CHROME_PATHS 등도 포함)
 )
 
@@ -129,6 +130,39 @@ from .category_ai.category_worker import CategoryBuildWorker
 # coupang_upload_form 내 엑셀파일 로 부터 검색 시간 줄이기 위한 json 파일 생성 까지 완료 - ui 버튼 내 기능 연결 전
 from build_coupang_upload_index import build_coupang_upload_index
 
+
+# =========================
+# 설정값 (튜닝 포인트)
+# =========================
+
+# 조회/표시할 상태: 결제완료 → 상품준비중 → 배송지시 → 배송중 → 배송완료
+CP_QUERY_STATUSES = ["ACCEPT", "INSTRUCT", "DEPARTURE", "DELIVERING", "DELIVERED"]
+
+# 시트에 적을 한글 상태 라벨
+CP_STATUS_MAP = {
+    "ACCEPT": "결제완료",
+    "INSTRUCT": "상품준비중",
+    "DEPARTURE": "배송지시",
+    "DELIVERING": "배송중",
+    "DELIVERED": "배송완료",
+}
+
+# API별 상태 이름 별칭
+ORDER_STATUS_ALIASES = {
+    "ACCEPT": ["ACCEPT", "PAID", "PAYMENT_COMPLETED", "ORDER_COMPLETE"],
+    "INSTRUCT": ["INSTRUCT", "READY", "READY_FOR_DELIVERY", "PREPARE_SHIPMENT"],
+    "DEPARTURE": ["DEPARTURE", "DELIVERY_REQUESTED", "SHIPPING_READY"],
+    "DELIVERING": ["DELIVERING"],
+    "DELIVERED": ["DELIVERED", "DELIVERY_COMPLETED", "DONE", "FINAL_DELIVERY"],
+}
+
+STATUS_ORDER = {
+    "결제완료": 0,
+    "상품준비중": 1,
+    "배송지시": 2,
+    "배송중": 3,
+    "배송완료": 4,
+}
 
 # =========================
 # 유틸 함수
@@ -1907,15 +1941,26 @@ class ChromeCrawler(QWidget):
     def _cp_get_registered_product_name(self, seller_product_id: str) -> str | None:
         if not seller_product_id:
             return None
+
         if seller_product_id in self._cp_seller_name_cache:
             return self._cp_seller_name_cache[seller_product_id]
+
+        try:
+            keys = load_coupang_keys()
+        except Exception:
+            # 키 로드 실패 시 조용히 None
+            return None
+
         paths = [
+            # vendor_id 불필요한 v1
             f"/v2/providers/openapi/apis/api/v1/marketplace/seller-products/{seller_product_id}",
-            f"/v2/providers/openapi/apis/api/v2/vendors/{COUPANG_VENDOR_ID}/seller-products/{seller_product_id}",
+            # vendor_id 필요한 v2
+            f"/v2/providers/openapi/apis/api/v2/vendors/{keys.vendor_id}/seller-products/{seller_product_id}",
         ]
+
         for path in paths:
             try:
-                data = _cp_request("GET", path, None)
+                data = cp_request("GET", path, None, keys=keys)
                 info = (data or {}).get("data") or {}
                 name = info.get("sellerProductName") or info.get("name")
                 if name:
@@ -1923,12 +1968,15 @@ class ChromeCrawler(QWidget):
                     return name
             except Exception:
                 continue
+
         return None
 
     # ==== 쿠팡 주문조회 + 시트기록 ====
     def _fetch_coupang_orders(self) -> list[dict]:
-        if not (COUPANG_VENDOR_ID and COUPANG_ACCESS_KEY and COUPANG_SECRET_KEY):
-            self._log("❌ 쿠팡 API 키/벤더ID 설정이 비어 있습니다.")
+        try:
+            keys = load_coupang_keys()
+        except Exception as e:
+            self._log(f"❌ 쿠팡 API 키 로드 실패: {e}")
             return []
 
         days = int(self.spin_days.value() if hasattr(self, "spin_days") else DEFAULT_LOOKBACK_DAYS)
@@ -1936,9 +1984,10 @@ class ChromeCrawler(QWidget):
         from_dt = to_dt - timedelta(days=days)
         created_from = from_dt.strftime("%Y-%m-%d")
         created_to = to_dt.strftime("%Y-%m-%d")
+
         self._log(f"🔍 조회기간: 최근 {days}일 (UTC {created_from} ~ {created_to})")
 
-        path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets"
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{keys.vendor_id}/ordersheets"
         all_rows: list[dict] = []
 
         for st in CP_QUERY_STATUSES:
@@ -1958,7 +2007,7 @@ class ChromeCrawler(QWidget):
                         params["nextToken"] = next_token
 
                     try:
-                        data = _cp_request("GET", path, params)
+                        data = cp_request("GET", path, params)
                     except requests.HTTPError as e:
                         resp = getattr(e, "response", None)
                         body = ""
@@ -2301,99 +2350,69 @@ class ChromeCrawler(QWidget):
 
     # === (통합) 쿠팡 키 확인 + 헬스체크 버튼 동작 ===
     def coupang_key_and_health(self):
-        self.check_coupang_keys()
-        self.coupang_healthcheck()
+        self._log("🔐 쿠팡 키 확인 시작")
 
-    # === 쿠팡 키 확인 ===
-    def check_coupang_keys(self):
         try:
-            p = Path(COUPANG_KEYS_JSON)
-            if not p.exists():
-                self._log(f"❌ 키 파일을 찾지 못했습니다: {COUPANG_KEYS_JSON}")
-                self._log("➡ 경로/파일명을 다시 확인하거나 JSON을 생성해 주세요.")
-                return
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            vendor_id = (data.get("vendor_id") or "").strip()
-            access_key = (data.get("access_key") or "").strip()
-            secret_key = (data.get("secret_key") or "").strip()
-
-            self._log("✅ JSON 파일 읽기 성공")
-            self._log(f"• Vendor ID: {vendor_id or '(빈 값)'}")
-            self._log(f"• Access Key: {access_key or '(빈 값)'}")
-            self._log(f"• Secret Key: {_mask(secret_key) if secret_key else '(빈 값)'}")
-
-            problems = []
-            if not vendor_id: problems.append("vendor_id가 비어 있습니다.")
-            if not access_key: problems.append("access_key가 비어 있습니다.")
-            if not secret_key: problems.append("secret_key가 비어 있습니다.")
-            if problems:
-                for m in problems:
-                    self._log(f"⚠️ {m}")
-                return
-
-            mismatches = []
-            if COUPANG_VENDOR_ID != vendor_id:
-                mismatches.append("전역 Vendor ID와 JSON의 vendor_id가 다릅니다.")
-            if COUPANG_ACCESS_KEY != access_key:
-                mismatches.append("전역 Access Key와 JSON의 access_key가 다릅니다.")
-            if COUPANG_SECRET_KEY != secret_key:
-                mismatches.append("전역 Secret Key와 JSON의 secret_key가 다릅니다.")
-            if mismatches:
-                self._log("⚠️ 전역 설정과 JSON 파일의 값이 일치하지 않습니다:")
-                for m in mismatches:
-                    self._log(f"   - {m}")
-                self._log("➡ JSON을 수정했으면 프로그램을 재시작하거나, 상단 상수 경로/로딩 부분을 확인하세요.")
-
-            # 간단 HMAC 메시지 생성 테스트
-            try:
-                test_path = f"/v2/providers/openapi/apis/api/v4/vendors/{vendor_id}/ordersheets"
-                test_query = urlencode({"status": "ACCEPT", "maxPerPage": 50}, doseq=True)
-                signed_date = datetime.now(timezone.utc).strftime("%y%m%dT%H%M%SZ")
-                msg = f"{signed_date}{'GET'}{test_path}{test_query}"
-                signature = hmac.new(secret_key.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
-                auth_head = (
-                    f"CEA algorithm=HmacSHA256, access-key={access_key}, "
-                    f"signed-date={signed_date}, signature={signature}"
-                )
-                self._log("🔐 HMAC 서명 생성 테스트 성공")
-                self._log(f"• Authorization 헤더 앞부분: {auth_head[:60]}...")
-            except Exception as e:
-                self._log(f"❌ HMAC 서명 생성 실패: {e}")
-
-            self._log("🟢 키 확인 완료")
-
-        except json.JSONDecodeError as e:
-            self._log(f"❌ JSON 파싱 실패: {e}")
-            self._log("➡ 파일 내용이 유효한 JSON 형식인지 확인하세요.")
+            keys = load_coupang_keys()
+            self._log(f"✅ 쿠팡 키 로드 성공 (vendor_id={keys.vendor_id})")
         except Exception as e:
-            self._log(f"❌ 키 확인 중 오류: {e}")
+            self._log(f"❌ 쿠팡 키 로드 실패: {e}")
+            return
+
+        # 🔹 키 로드 성공 시 헬스체크 진행
+        self.coupang_healthcheck(keys)
+
 
     # === 쿠팡 API 헬스체크 ===
-    def coupang_healthcheck(self):
+    def coupang_healthcheck(self, keys):
         self._log("🩺 쿠팡 API 헬스체크 시작")
-        if not (COUPANG_VENDOR_ID and COUPANG_ACCESS_KEY and COUPANG_SECRET_KEY):
-            self._log("❌ 쿠팡 키/벤더ID가 비어 있습니다. coupang_keys.json 확인")
+
+        # 🔹 keys 객체 기반 검증 (기존 전역 상수 검증 대체)
+        if not keys or not keys.vendor_id:
+            self._log("❌ 쿠팡 키 로드 실패 또는 vendor_id 없음. coupang_keys.json 확인")
             return
+
         try:
             to_dt = datetime.now(timezone.utc)
-            from_dt = to_dt - timedelta(days=1)  # 헬스체크는 간단히 최근 1일로 확인
-            path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets"
-            param_variants = _build_ordersheets_params(from_dt, to_dt, status="ACCEPT", max_per_page=1)
-            data = try_ordersheets_with_variants(path, param_variants)
+            from_dt = to_dt - timedelta(days=1)  # 헬스체크는 최근 1일
+
+            path = f"/v2/providers/openapi/apis/api/v4/vendors/{keys.vendor_id}/ordersheets"
+
+            param_variants = build_ordersheets_params(
+                from_dt,
+                to_dt,
+                status="ACCEPT",
+                max_per_page=1,
+            )
+
+            data = try_ordersheets_with_variants(
+                path,
+                param_variants,
+                keys=keys,   # 🔹 핵심: keys 주입
+            )
+
             code = str(data.get("code", "")).upper()
-            self._log(f"✅ 헬스체크 성공: path='{path}', params={param_variants[0]} (code={code or 'N/A'})")
+            self._log(
+                f"✅ 헬스체크 성공: path='{path}', params={param_variants[0]} "
+                f"(code={code or 'N/A'})"
+            )
             self._log("🟢 쿠팡 API 키/서명/경로 정상으로 보입니다.")
             return
+
         except requests.HTTPError as e:
             self._log_http_error(e, context="헬스체크(ordersheets) 실패")
+
         except Exception as e:
             self._log(f"❌ 헬스체크(ordersheets) 중 예외: {repr(e)}")
-        self._log("❌ 헬스체크가 실패했습니다. 다음을 점검해 주세요:\n"
-                  "  1) 판매자센터(Wing) OpenAPI 키 여부 (파트너스 키 아님)\n"
-                  "  2) 시스템연동 > Open API 사용 활성 및 권한 승인\n"
-                  "  3) 허용 IP에 현재 PC 공인 IP 등록\n"
-                  "  4) PC 시간 자동 동기화(UTC, 수초 이하 오차)\n")
+
+        self._log(
+            "❌ 헬스체크가 실패했습니다. 다음을 점검해 주세요:\n"
+            "  1) 판매자센터(Wing) OpenAPI 키 여부 (파트너스 키 아님)\n"
+            "  2) 시스템연동 > Open API 사용 활성 및 권한 승인\n"
+            "  3) 허용 IP에 현재 PC 공인 IP 등록\n"
+            "  4) PC 시간 자동 동기화(UTC, 수초 이하 오차)\n"
+        )
+
     
     # === 쿠팡주문현황 '최종 수익' 채우기 (주문정리) ===
     def settle_orders(self):

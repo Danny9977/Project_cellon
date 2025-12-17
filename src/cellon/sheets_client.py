@@ -15,10 +15,10 @@ from openpyxl.utils import column_index_from_string
 from .config import digits_only, is_int_string
 from typing import Mapping, Any
 
-# config에서 필요한 값 import
-from .config import (
-    COUPANG_KEYS_JSON, COUPANG_BASE_URL, SERVICE_ACCOUNT_JSON, SHEET_ID, WORKSHEET_NAME,
-    CP_QUERY_STATUSES, ORDER_STATUS_ALIASES, CP_STATUS_MAP, STATUS_ORDER, COUPANG_WS_NAME,
+from cellon.config import (
+    COUPANG_KEYS_JSON, COUPANG_BASE_URL,
+    SERVICE_ACCOUNT_JSON, SHEET_ID, WORKSHEET_NAME,
+    COUPANG_WS_NAME,
     FIXED_CONST_FEE, DEFAULT_LOOKBACK_DAYS
 )
 
