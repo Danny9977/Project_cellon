@@ -1,4 +1,10 @@
 # cellon/category_ai/category_worker.py
+import os
+import shutil
+import openpyxl
+from copy import copy
+# 기존 import 문 아래에 추가
+
 from pathlib import Path
 from typing import Optional
 
@@ -50,4 +56,55 @@ class CategoryBuildWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+            
+            
+    # CategoryWorker 클래스 내부 혹은 유틸리티 섹션에 삽입
+    def save_to_excel_template(self, product, matched_category):
+        """
+        설명하신 로직: 템플릿 복사 -> 행 탐색 -> 데이터 삽입
+        """
+        base_dir = "assets/crawling_temp"
+        # 1. 원본 파일 식별 (카테고리에 따라 폴더/파일명 결정)
+        # 현재 구조상 '주방용품' 등의 대분류를 폴더명으로 활용
+        main_cat = matched_category.split('>')[0].strip() 
+        source_folder = os.path.join(base_dir, "coupang_upload_form", main_cat)
+        
+        # 예시로 '주방용품>조리용품' 파일을 타겟으로 설정 (로직에 따라 동적 변경 가능)
+        source_file = "sellertool_upload_주방용품>조리용품.xlsm" 
+        source_path = os.path.join(source_folder, source_file)
+        
+        # 2. 결과 저장 경로 설정
+        target_dir = os.path.join(base_dir, "upload_ready")
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
+        
+        target_path = os.path.join(target_dir, f"ready_{product.title[:10]}.xlsm")
+        
+        # 3. 파일 복사 및 엑셀 작업
+        shutil.copy2(source_path, target_path)
+        wb = openpyxl.load_workbook(target_path, keep_vba=True)
+        ws = wb.active
+        
+        # 4. 행 찾기 (A열: 카테고리, CK열: 기타제화)
+        target_row = None
+        for r in range(1, 2000):
+            if str(ws.cell(row=r, column=1).value) == matched_category:
+                ck_val = str(ws.cell(row=r, column=89).value) # CK열
+                if "기타제화" in ck_val or "기타 제화" in ck_val:
+                    target_row = r
+                    break
+        
+        if target_row:
+            # 5. 최상단 삽입 및 데이터 기록
+            ws.insert_rows(1, amount=2)
+            ws.cell(row=1, column=1).value = "--- New Product Data ---"
+            
+            # 데이터 매핑 (Product 객체의 속성 활용)
+            src_idx = target_row + 2
+            ws.cell(row=2, column=1).value = matched_category
+            ws.cell(row=2, column=2).value = product.title
+            ws.cell(row=2, column=5).value = product.price
+            # ... (이전 코드의 매핑 로직 적용)
+            
+        wb.save(target_path)
 

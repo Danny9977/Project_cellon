@@ -41,12 +41,18 @@ SELLERTOOL_SHEET_NAME = "data"
 # 배경 이미지 (지금 쓰는 1000x1000)
 PRODUCT_BG_IMAGE_PATH = ASSETS_DIR / "image" / "bg" / "product_bg_1000.jpg"
 
-# 코스트코→쿠팡 대량등록용 템플릿 엑셀
-# 실제 파일명이 다르면 이 한 줄만 파일명에 맞게 바꿔주세요.
-# 추후 쿠팡 업로드용 매크로 엑셀 (미리 정의만)
-SELLERTOOL_XLSM_PATH = UPLOAD_READY_DIR / "sellertool_upload.xlsm"
-SELLERTOOL_SHEET_NAME = "data"  # 실제 시트 이름
+# 코스트코→쿠팡 대량등록용 템플릿(원본) 엑셀
+# - 여기는 "원본 파일이 실제로 존재하는 위치"여야 합니다.
+# - 예: assets/crawling_temp/coupang_upload_form/sellertool_upload.xlsm
+SELLERTOOL_SOURCE_XLSM_PATH = COUPANG_UPLOAD_FORM_DIR / "sellertool_upload.xlsm"
 
+# 코스트코→쿠팡 대량등록용 템플릿 엑셀
+SELLERTOOL_XLSM_PATH = UPLOAD_READY_DIR / "sellertool_upload.xlsm"
+
+# 작업본(결과물) 엑셀 파일명(확장자 포함)
+SELLERTOOL_WORKBOOK_NAME = "sellertool_upload_work.xlsm"
+
+SELLERTOOL_SHEET_NAME = "data"
 
 # === 로컬 LLM(Ollama) 설정 ===
 LOCAL_LLM_BASE_URL = "http://localhost:11434"

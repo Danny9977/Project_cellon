@@ -8,7 +8,7 @@ from PIL import Image
 
 
 # 🔹 config 에서 경로 상수 가져오기
-from .config import CRAWLING_TEMP_IMAGE_DIR, PRODUCT_BG_IMAGE_PATH
+from cellon.config import CRAWLING_TEMP_IMAGE_DIR, PRODUCT_BG_IMAGE_PATH
 
 # ----- 설정 임포트 -----
 # 여기 추가

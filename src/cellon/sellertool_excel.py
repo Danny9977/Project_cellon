@@ -1,17 +1,17 @@
 # cellon/sellertool_excel.py
 from __future__ import annotations
 
+import json
 import shutil
+from copy import copy
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
-
-import json
-from functools import lru_cache
-from pathlib import Path
 
 from .config import (
     COUPANG_UPLOAD_FORM_DIR,
@@ -22,9 +22,51 @@ from .config import (
 from .core.product import Product
 
 
+
 # =========================
 # 유틸
 # =========================
+
+
+def prepare_sellertool_workbook_copy(
+    template_xlsm_path: str | Path,
+    out_dir: str | Path,
+    output_name: str | None = None,
+    add_date_subdir: bool = False,
+) -> Path:
+    """
+    템플릿 xlsm을 작업용 복사본으로 만들어 반환.
+    - template_xlsm_path: 원본 템플릿 (예: sellertool_upload_toplevel.xlsm)
+    - out_dir: 복사본을 둘 폴더
+    - output_name: 복사본 파일명 (None이면 템플릿명 기반 자동)
+    - add_date_subdir: True면 out_dir/YYYYMMDD 하위에 생성
+    """
+    template_xlsm_path = Path(template_xlsm_path)
+    out_dir = Path(out_dir)
+
+    if not template_xlsm_path.exists():
+        raise FileNotFoundError(
+            "템플릿 xlsm을 찾지 못했습니다.\n"
+            f"- template_xlsm_path: {template_xlsm_path}\n"
+            "해결:\n"
+            "1) assets/crawling_temp/coupang_upload_form/ 아래에 sellertool_upload.xlsm을 넣거나\n"
+            "2) config.py의 SELLERTOOL_SOURCE_XLSM_PATH를 실제 템플릿 위치로 수정하세요."
+        )
+
+    if add_date_subdir:
+        date_str = datetime.now().strftime("%Y%m%d")
+        out_dir = out_dir / date_str
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if not output_name:
+        output_name = template_xlsm_path.name.replace(".xlsm", "_work.xlsm")
+
+    dst = out_dir / output_name
+    shutil.copy2(template_xlsm_path, dst)
+    return dst
+
+
 
 def _safe_str(v) -> str:
     if v is None:
@@ -71,16 +113,18 @@ def _normalize_category_text(text: str) -> str:
 
 
 # =========================
-# 1) 템플릿 인덱스 (파일명 → Path)
+# 1) 템플릿 인덱스 (파일명 → 절대경로 폴더 내 재귀검색)
 # =========================
 
 @lru_cache(maxsize=1)
 def _build_template_index() -> dict[str, Path]:
     """
-    쿠팡 업로드 템플릿 인덱스를 JSON 에서 읽어온다.
+    쿠팡 업로드 템플릿 인덱스를 생성한다.
 
-    - JSON 이 없으면: 카테고리 분석(또는 build_coupang_upload_index.py)을
-      먼저 실행하라는 에러를 던진다.
+    기본 정책:
+    - (B) JSON 인덱스가 있으면: JSON 을 신뢰하고 빠르게 로드한다. (추천)
+    - (A) JSON 인덱스가 없거나/깨졌거나/비어 있으면: rglob() 재귀 탐색으로 백업한다.
+
     - JSON 포맷:
       {
         "templates": [
@@ -89,32 +133,106 @@ def _build_template_index() -> dict[str, Path]:
         ]
       }
     """
-    if not COUPANG_UPLOAD_INDEX_JSON.exists():
-        raise RuntimeError(
-            f"쿠팡 업로드 템플릿 인덱스 JSON이 없습니다: {COUPANG_UPLOAD_INDEX_JSON}\n"
-            "먼저 '카테고리 분석' 또는 build_coupang_upload_index.py 를 실행해서 "
-            "인덱스를 생성해 주세요."
-        )
-
-    with COUPANG_UPLOAD_INDEX_JSON.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    templates = data.get("templates", [])
-    if not templates:
-        raise RuntimeError(
-            f"쿠팡 업로드 템플릿 인덱스가 비어 있습니다: {COUPANG_UPLOAD_INDEX_JSON}\n"
-            "카테고리 분석을 다시 실행해 주세요."
-        )
-
-    index: dict[str, Path] = {}
     root = COUPANG_UPLOAD_FORM_DIR
 
-    for item in templates:
-        key = item["key"]
-        rel = Path(item["relative_path"])
-        index[key] = (root / rel).resolve()
+    # -------------------------
+    # (B) JSON 인덱스 우선 로드
+    # -------------------------
+    if COUPANG_UPLOAD_INDEX_JSON.exists():
+        try:
+            with COUPANG_UPLOAD_INDEX_JSON.open("r", encoding="utf-8") as f:
+                data = json.load(f)
 
-    return index
+            templates = data.get("templates", [])
+            if not templates:
+                # JSON은 있으나 내용이 비어있음 → 기존처럼 강하게 안내 + (A) 백업 시도
+                print(
+                    f"[WARN] 쿠팡 업로드 템플릿 인덱스가 비어 있습니다: {COUPANG_UPLOAD_INDEX_JSON}\n"
+                    "카테고리 분석을 다시 실행하는 것을 권장합니다. (백업 탐색을 시도합니다)"
+                )
+            else:
+                index: dict[str, Path] = {}
+                missing_count = 0
+
+                for item in templates:
+                    key = item.get("key")
+                    rel_raw = item.get("relative_path")
+
+                    if not key or not rel_raw:
+                        # 포맷 이상 항목은 건너뛰되 경고만 남김
+                        print(f"[WARN] 잘못된 템플릿 인덱스 항목을 건너뜁니다: {item}")
+                        continue
+
+                    rel = Path(rel_raw)
+                    abs_path = (root / rel).resolve()
+                    index[key] = abs_path
+
+                    # 파일이 실제로 없으면 카운트만 하고 계속 (나중에 백업 여부 결정)
+                    if not abs_path.exists():
+                        missing_count += 1
+
+                # JSON 기반 인덱스가 실질적으로 유효하면 그대로 사용
+                if index and missing_count == 0:
+                    return index
+
+                # 일부/전체 경로가 깨진 경우 → 경고 후 (A) 백업 탐색
+                if index and missing_count > 0:
+                    print(
+                        "[WARN] 쿠팡 템플릿 인덱스 JSON은 있으나, 실제 파일 경로가 누락된 항목이 있습니다.\n"
+                        f"- 누락 항목 수: {missing_count}\n"
+                        f"- JSON 경로: {COUPANG_UPLOAD_INDEX_JSON}\n"
+                        "해결:\n"
+                        "1) 템플릿 파일 이동/삭제 여부를 확인하거나\n"
+                        "2) build_coupang_upload_index.py 를 다시 실행해 인덱스를 재생성하세요.\n"
+                        "우선 백업 탐색(rglob)을 시도합니다."
+                    )
+
+                # JSON이 있긴 하나 결과가 비어 있거나 경로가 깨짐 → 백업으로 진행
+        except Exception as e:
+            # JSON 파손/인코딩 문제 등 → 기존처럼 강하게 안내 + (A) 백업 시도
+            print(
+                f"[WARN] 쿠팡 업로드 템플릿 인덱스 JSON 로드에 실패했습니다: {COUPANG_UPLOAD_INDEX_JSON}\n"
+                f"- 원인: {repr(e)}\n"
+                "해결:\n"
+                "1) 카테고리 분석(또는 build_coupang_upload_index.py)을 다시 실행하거나\n"
+                "2) JSON 파일이 정상인지 확인하세요.\n"
+                "우선 백업 탐색(rglob)을 시도합니다."
+            )
+
+    else:
+        # 기존 안전장치 메시지 톤을 유지하되, 즉시 종료하지 않고 백업을 시도
+        print(
+            f"[WARN] 쿠팡 업로드 템플릿 인덱스 JSON이 없습니다: {COUPANG_UPLOAD_INDEX_JSON}\n"
+            "먼저 '카테고리 분석' 또는 build_coupang_upload_index.py 를 실행해서 "
+            "인덱스를 생성하는 것을 권장합니다.\n"
+            "우선 백업 탐색(rglob)을 시도합니다."
+        )
+
+    # -------------------------
+    # (A) 백업: rglob 재귀 탐색
+    # -------------------------
+    index: dict[str, Path] = {}
+    for path in root.rglob("sellertool_upload_*.xlsm"):
+        key = path.stem.replace("sellertool_upload_", "")
+        index[key] = path.resolve()
+
+    if index:
+        return index
+
+    # -------------------------
+    # 최종 실패: 기존과 유사한 강한 에러
+    # -------------------------
+    raise RuntimeError(
+        f"쿠팡 업로드 폼 템플릿을 찾지 못했습니다: {root}\n"
+        "확인:\n"
+        "1) coupang_upload_form 내의 쿠팡 템플릿 구조 아래에 sellertool_upload_*.xlsm 이 존재하는지\n"
+        f"2) 인덱스 JSON({COUPANG_UPLOAD_INDEX_JSON})이 정상인지\n"
+        "해결:\n"
+        "1) '카테고리 분석' 또는 build_coupang_upload_index.py 로 인덱스를 생성하고\n"
+        "2) 템플릿 파일들이 올바른 위치에 있는지 확인해 주세요."
+    )
+
+
 
 
 def find_template_for_category_path(category_path: str) -> Path:
@@ -213,17 +331,49 @@ def _find_column_contains(ws: Worksheet, keyword: str) -> Optional[int]:
             return cell.column
     return None
 
+def _get_target_insertion_row(ws: Worksheet) -> int:
+    """
+    [새로 추가된 함수]
+    파일마다 다른 양식 구간(Template Source)의 끝을 찾아내고,
+    그 아래에 구분자(Divider)를 넣은 뒤 실제 데이터가 들어갈 행 번호를 반환합니다.
+    """
+    # 1. 시트에서 실제로 데이터가 있는 마지막 행 찾기 (A열 기준 역순 탐색)
+    # 엑셀 파일마다 10행일수도, 128행일수도, 300행일수도 있는 '양식 끝'을 동적으로 찾습니다.
+    last_template_row = 0
+    for r in range(ws.max_row, 0, -1):
+        if _safe_str(ws.cell(row=r, column=1).value):
+            last_template_row = r
+            break
+            
+    # 2. 이미 구분자("---")가 포함된 행이 있는지 확인 (이미 상품이 하나 이상 추가된 경우)
+    divider_found_row = 0
+    for r in range(1, ws.max_row + 1):
+        val = _safe_str(ws.cell(row=r, column=1).value)
+        if "------------------" in val:
+            divider_found_row = r
+            break
 
-def _find_first_empty_row(ws: Worksheet, start_row: int = 5) -> int:
-    """
-    A열 기준으로 첫 번째 빈 행을 찾는다.
-    (A열에 카테고리 ID가 없으면 '입력 가능' 행이라고 가정)
-    """
-    row = start_row
-    while True:
-        if not _safe_str(ws.cell(row=row, column=1).value):
-            return row
-        row += 1
+    # 3. 상황에 따른 목적지 행(Destination Row) 결정
+    if divider_found_row > 0:
+        # CASE A: 이미 구분자가 있음 -> 구분자 아래에서 첫 번째 빈 행을 찾아 이어서 작성
+        curr_row = divider_found_row + 1
+        while True:
+            if not _safe_str(ws.cell(row=curr_row, column=1).value):
+                return curr_row
+            curr_row += 1
+    else:
+        # CASE B: 구분자가 없음 (최초 작성) -> 양식 끝 바로 다음 행에 구분자 삽입
+        divider_row = last_template_row + 1
+        ws.cell(row=divider_row, column=1).value = "------------------ 여기서부터 크롤링 데이터 등록 ------------------"
+        
+        # 가독성을 위해 노란색 배경색(PatternFill) 추가 (선택사항)
+        from openpyxl.styles import PatternFill
+        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+        ws.cell(row=divider_row, column=1).fill = yellow_fill
+        
+        # 데이터는 구분자 바로 다음 행(양식끝 + 2)부터 시작
+        return divider_row + 1
+
 
 
 def _pick_template_row(
@@ -262,16 +412,32 @@ def _pick_template_row(
     return candidates[0]
 
 
-def _copy_row(ws: Worksheet, src_row: int, dst_row: int, max_col: int = 120) -> None:
+def _copy_row_full(ws: Worksheet, src_row: int, dst_row: int, max_col: int = 120) -> None:
     """
-    src_row → dst_row 로 '값'만 복사.
-    (스타일/데이터유효성까지 필요해지면 나중에 확장)
+    [수정] src_row → dst_row 로 값, 스타일, 데이터 유효성(드롭다운)까지 모두 복사.
+    단순 값 복사에서 '스타일(색상, 테두리, 수식 등)'까지 복사하도록 변경.
+    쿠팡 엑셀은 양식 서식이 중요하므로 copy 모듈을 사용합니다.
     """
+    # 1. 스타일 및 값 복사
     for col in range(1, max_col + 1):
-        src = ws.cell(row=src_row, column=col)
-        dst = ws.cell(row=dst_row, column=col)
-        dst.value = src.value
+        src_cell = ws.cell(row=src_row, column=col)
+        dst_cell = ws.cell(row=dst_row, column=col)
+        dst_cell.value = src_cell.value
+        
+        if src_cell.has_style:
+            dst_cell.font = copy(src_cell.font)
+            dst_cell.border = copy(src_cell.border)
+            dst_cell.fill = copy(src_cell.fill)
+            dst_cell.number_format = copy(src_cell.number_format)
+            dst_cell.alignment = copy(src_cell.alignment)
 
+    # 2. 데이터 유효성(드롭다운) 복사
+    for dv in ws.data_validations.dataValidation:
+        for range_obj in dv.sqref.ranges:
+            if range_obj.min_row <= src_row <= range_obj.max_row:
+                for col in range(range_obj.min_col, range_obj.max_col + 1):
+                    addr = f"{get_column_letter(col)}{dst_row}"
+                    dv.add(addr)
 
 def _fill_product_data(
     ws: Worksheet,
@@ -331,18 +497,26 @@ def prepare_and_fill_sellertool(
 
     최종적으로 수정된 upload_ready 안의 파일 Path 를 반환.
     """
-       
-    if not COUPANG_UPLOAD_INDEX_JSON.exists():
-        raise RuntimeError(
-            f"쿠팡 업로드 템플릿 인덱스 JSON이 없습니다: {COUPANG_UPLOAD_INDEX_JSON}\n"
-            "먼저 '카테고리 분석' 또는 build_coupang_upload_index.py 를 실행해 주세요."
-        )
-    # ---- 디버그 로그 엑셀파일이 아닌 json 에서 읽는지 확인 ----
-    print("[DEBUG] template index JSON exists. loading:", COUPANG_UPLOAD_INDEX_JSON)
+    #for test
     
-    with COUPANG_UPLOAD_INDEX_JSON.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    # ---- 디버그 로그 엑셀파일이 아닌 json 에서 읽는지 확인 ----
+    print("[DEBUG] prepare_and_fill_sellertool called")
+    
+    # ---- 디버그 로그: 템플릿 인덱스 JSON 상태 확인 ----
+    # 정책:
+    # - JSON 이 있으면 (B) 인덱스 기반으로 빠르게 찾는다.
+    # - JSON 이 없거나/깨졌으면 (A) rglob 백업 탐색으로 찾는다.
+    if COUPANG_UPLOAD_INDEX_JSON.exists():
+        print("[DEBUG] template index JSON exists:", COUPANG_UPLOAD_INDEX_JSON)
+    else:
+        print(
+            "[WARN] 쿠팡 업로드 템플릿 인덱스 JSON이 없습니다.\n"
+            f"- JSON 경로: {COUPANG_UPLOAD_INDEX_JSON}\n"
+            "권장:\n"
+            "1) '카테고리 분석' 또는 build_coupang_upload_index.py 를 실행해 "
+            "인덱스를 생성해 주세요.\n"
+            "우선 백업 탐색(rglob)으로 템플릿 선택을 시도합니다."
+        )
+
     
         
     # ---- 1) 템플릿 선택 ----
@@ -350,7 +524,10 @@ def prepare_and_fill_sellertool(
 
     # ---- 2) upload_ready 폴더로 '원래 파일명' 그대로 복사 ----
     UPLOAD_READY_DIR.mkdir(parents=True, exist_ok=True)
-    dest_path = UPLOAD_READY_DIR / template_path.name
+    top = _safe_str(coupang_category_path).split(">")[0].strip()  # 예: 주방용품
+    suffix = top if top else "etc"
+    dest_name = f"{template_path.stem}_{suffix}{template_path.suffix}"
+    dest_path = UPLOAD_READY_DIR / dest_name
 
     # 같은 템플릿을 여러 번 쓰는 경우:
     # 이미 dest_path 가 있으면 복사하지 않고 기존 파일에 행만 추가
@@ -372,10 +549,10 @@ def prepare_and_fill_sellertool(
     src_row = _pick_template_row(ws, coupang_category_id, coupang_category_path)
 
     # ---- 5) 첫 번째 빈 입력 행 찾기 (A열 기준) ----
-    dst_row = _find_first_empty_row(ws, start_row=5)
+    dst_row = _get_target_insertion_row(ws)
 
     # ---- 6) 템플릿 행 복사 후 상품 데이터 덮어쓰기 ----
-    _copy_row(ws, src_row, dst_row, max_col=120)
+    _copy_row_full(ws, src_row, dst_row, max_col=120)
     _fill_product_data(
         ws,
         dst_row,
@@ -386,5 +563,13 @@ def prepare_and_fill_sellertool(
 
     # ---- 7) 저장 ----
     wb.save(dest_path)
+    
+    
+    print("[DEBUG] template_path =", template_path)
+    print("[DEBUG] template_path.name =", template_path.name)
+    print("[DEBUG] dest_path =", dest_path)
+    print("[DEBUG] dest exists? =", dest_path.exists())
 
     return dest_path
+
+

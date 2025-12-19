@@ -82,29 +82,7 @@ from .image_process import process_captured_folder   # 🔹 추가
 
 # ============= 중복이기는 한데, 너무 많이 가져와야 해서 그냥 중복상태로 둠 ==========
 # ui_main.py – config 및 category_ai
-#from .config import *  # 가능하면 * 대신 필요한 것만 가져오는 쪽으로 나중에 정리
-from .config import (
-    today_fmt,
-    label_for_domain,
-    _a1_col,
-    digits_only,
-    is_macos,
-    CATEGORY_EXCEL_DIR,
-    CRAWLING_TEMP_IMAGE_DIR,
-    PRODUCT_BG_IMAGE_PATH,
-    SELLERTOOL_XLSM_PATH,
-    SERVICE_ACCOUNT_JSON,
-    SHEET_ID,
-    WORKSHEET_NAME,
-    DEFAULT_LOOKBACK_DAYS,
-    UPLOAD_READY_DIR,
-    DEBUGGER_PORT,
-    CHROME_PATHS,
-    COUPANG_WS_NAME,
-    # ... 여기로 전부 모으세요 (DEBUGGER_PORT, CHROME_PATHS 등도 포함)
-)
-
-# ui_main.py – config 및 category_ai
+from .config import *  # 가능하면 * 대신 필요한 것만 가져오는 쪽으로 나중에 정리
 from .config import (
     today_fmt,
     label_for_domain,
@@ -120,7 +98,22 @@ from .config import (
     WORKSHEET_NAME,
     DEFAULT_LOOKBACK_DAYS,
     UPLOAD_READY_DIR,
+    DEBUGGER_PORT,
+    CHROME_PATHS,
+    COUPANG_WS_NAME,
+    CLICK_TIMEOUT_MS_SELECT,
+    CLICK_TIMEOUT_MS_RECORD,
+    KEY_DELAY_SEC,
+    CLICK_STABILIZE_SEC,
+    NAV_DELAY_SEC,
+    DATE_FORMAT,
+    FIXED_CONST_FEE,
+    DOMAIN_LABELS,
+    SELLERTOOL_SOURCE_XLSM_PATH,
+    SELLERTOOL_WORKBOOK_NAME,
+    # ... 여기로 전부 모으세요 (DEBUGGER_PORT, CHROME_PATHS 등도 포함)
 )
+
 #========================================================================
 
 # category_ai – 카테고리 매칭 모듈
@@ -129,6 +122,13 @@ from .category_ai.category_worker import CategoryBuildWorker
 # sellertool_excel – 쿠팡 업로드 엑셀 생성 모듈 : 
 # coupang_upload_form 내 엑셀파일 로 부터 검색 시간 줄이기 위한 json 파일 생성 까지 완료 - ui 버튼 내 기능 연결 전
 from build_coupang_upload_index import build_coupang_upload_index
+
+# 셀러툴 엑셀 파일 카피 관련 함수
+from cellon.sellertool_excel import prepare_sellertool_workbook_copy
+
+
+# ✅ 템플릿 리졸버(1번 방식): best_key 선택 → 최종 xlsm 경로 확정
+from cellon.sellertool_excel import find_template_for_category_path
 
 
 # =========================
@@ -339,6 +339,11 @@ class CategorySelectDialog(QDialog):
         self._matched_indices: list[int] = []
         self._match_pos: int = -1
 
+        # 셀러툴 작업 엑셀 캐시 (코스트코 기록용)
+        self._sellertool_work_xlsm_path: Path | None = None
+        self._sellertool_work_xlsm_date: str | None = None
+
+        
         layout = QVBoxLayout(self)
 
         # ---- 상단 안내 ----
@@ -409,6 +414,17 @@ class CategorySelectDialog(QDialog):
         btn_row.addWidget(self.btn_ok)
         layout.addLayout(btn_row)
 
+        # ---- 이미지 prefix 입력 ----
+        row_prefix = QHBoxLayout()
+        row_prefix.addWidget(QLabel("이미지 prefix:"))
+        self.edit_img_prefix = QLineEdit()
+        self.edit_img_prefix.setPlaceholderText("예: toplevel (비우면 기본 규칙 사용)")
+        self.edit_img_prefix.setText("toplevel")
+        row_prefix.addWidget(self.edit_img_prefix)
+        layout.addLayout(row_prefix)
+
+        
+        
         # 내부 플래그: LLM 위임 여부
         self._use_llm = False
 
@@ -475,25 +491,32 @@ class CategorySelectDialog(QDialog):
         검색창 텍스트가 바뀔 때마다 즉시 전체 리스트에서 매칭되는 인덱스를 모아놓고,
         첫 번째 매칭 항목으로 포커스를 이동.
         """
-        text = (text or "").strip().lower()
+        search_text = (text or "").strip().lower()
         self._matched_indices.clear()
         self._match_pos = -1
 
-        if not text:
-            self.btn_prev.setEnabled(False)
-            self.btn_next.setEnabled(False)
-            return
-
-        # 리스트 전체 스캔 → text 를 포함하는 항목 인덱스만 수집
+        # 1. 전체 리스트를 돌며 검색어 포함 여부에 따라 숨김/표시 처리
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
-            if text in item.text().lower():
-                self._matched_indices.append(i)
+            if not item: continue # 안전장치
+            
+            try:
+                # 아이템 텍스트에 검색어가 포함되어 있는지 확인
+                is_match = search_text in item.text().lower()
+                item.setHidden(not is_match) # 매칭되지 않으면 숨김
+                
+                if is_match:
+                    self._matched_indices.append(i)
+            except RuntimeError:
+                # 이미 삭제된 아이템 참조 시 예외 처리 (에러 발생 방지)
+                continue
 
+        # 2. 버튼 활성화 제어
         has_match = bool(self._matched_indices)
         self.btn_prev.setEnabled(has_match)
         self.btn_next.setEnabled(has_match)
 
+        # 3. 매칭된 첫 번째 항목으로 스크롤/포커스
         if has_match:
             self._match_pos = 0
             self._focus_current_match()
@@ -560,6 +583,10 @@ class ChromeCrawler(QWidget):
         self._sheet_click_wait = False
         self._click_timer = None
 
+        # ✅ 코스트코 셀러툴 작업 엑셀 캐시 (하루 1번 생성 후 재사용)
+        self._sellertool_work_xlsm_path: Path | None = None
+        self._sellertool_work_xlsm_date: str | None = None
+        
         # 크롤 결과
         self.crawled_title = ""
         self.crawled_price = ""
@@ -1286,7 +1313,7 @@ class ChromeCrawler(QWidget):
 
         except Exception as e:
             self._log(f"[오류] 크롤링 실패: {e}")
-
+            
     # ---------- 구글시트 창 앞으로 가져오기 ----------
     def _bring_sheet_to_front(self):
         """
@@ -1399,7 +1426,7 @@ class ChromeCrawler(QWidget):
         self._bring_sheet_to_front()
 
     # ---------- 코스트코 → sellertool_upload.xlsm 기록 ----------
-    def _write_costco_to_seller_excel(self):
+    def _write_costco_to_seller_excel(self, xlsm_path: str | Path):
         """
         코스트코 상품(현재 self.crawled_title / self.crawled_price / self.crawled_url)을
         sellertool_upload.xlsm 에 다음 규칙으로 기록한다.
@@ -1425,18 +1452,26 @@ class ChromeCrawler(QWidget):
         - CK : '기타재화'
         - CZ : 행번호.png (예: 5행이면 '5.png')
         """
+        
+        # ✅ [추가] xlsm_path 방어 (None/"" 방지)
+        if not xlsm_path:
+            self._log("❌ 코스트코 엑셀 기록: xlsm_path가 비어있습니다.")
+            return None
+
+        
+        xlsm_path = Path(xlsm_path)  # ✅ str → Path 정규화
 
         if not self.crawled_title:
             self._log("⚠️ 코스트코 엑셀 기록: 상품명이 없습니다.")
             return None
 
-        if not os.path.exists(SELLERTOOL_XLSM_PATH):
-            self._log(f"❌ 코스트코 엑셀 기록: 파일을 찾지 못했습니다 → {SELLERTOOL_XLSM_PATH}")
+        if not xlsm_path.exists():
+            self._log(f"❌ 코스트코 엑셀 기록: 파일을 찾지 못했습니다 → {xlsm_path}")
             return None
 
         try:
-            self._log(f"📂 엑셀 열기: {SELLERTOOL_XLSM_PATH}")
-            wb = load_workbook(SELLERTOOL_XLSM_PATH, keep_vba=True)
+            self._log(f"📂 엑셀 열기(작업본): {xlsm_path}")
+            wb = load_workbook(xlsm_path, keep_vba=True)
         except Exception as e:
             self._log(f"❌ 엑셀 로드 실패: {e}")
             return None
@@ -1561,11 +1596,14 @@ class ChromeCrawler(QWidget):
         ws.cell(row=row_idx, column=col_BN).value = 2
         ws.cell(row=row_idx, column=col_BX).value = "상세정보별도표기"
         ws.cell(row=row_idx, column=col_CK).value = "기타재화"
-        ws.cell(row=row_idx, column=col_CZ).value = f"{row_idx}.png"
-        ws.cell(row=row_idx, column=col_DC).value = f"{row_idx}_spec.png"  # 🔹 DC 열에 spec 파일명
+        
+        img_prefix = self._make_image_prefix()  # 🔹 추가
+
+        ws.cell(row=row_idx, column=col_CZ).value = f"{img_prefix}_{row_idx}.png"
+        ws.cell(row=row_idx, column=col_DC).value = f"{img_prefix}_{row_idx}_spec.png"
 
         try:
-            wb.save(SELLERTOOL_XLSM_PATH)
+            wb.save(xlsm_path)
             self._log(f"✅ 코스트코 상품 기록 완료 → 행 {row_idx}")
         except Exception as e:
             self._log(f"❌ 엑셀 저장 실패: {e}")
@@ -1580,6 +1618,20 @@ class ChromeCrawler(QWidget):
             self._log(f"⚠️ 클립보드 복사 실패: {e}")
 
         return row_idx
+
+    # ============================
+    # 셀러툴 XLSM 준비 / 네이밍 헬퍼
+    # ============================
+
+    def _get_top_level_label(self) -> str:
+        """
+        coupang_category_path 의 최상위(예: '주방용품')를
+        파일명/이미지명에 쓸 수 있게 정리
+        """
+        raw = (self.coupang_category_path or "").strip()
+        top = raw.split(">")[0].strip() if raw else "etc"
+        top = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", top)
+        return top or "etc"
 
     def _capture_costco_image(self, row_idx: int, date_str: str | None = None):
         """
@@ -1677,10 +1729,12 @@ class ChromeCrawler(QWidget):
                 continue
 
             # ===== 파일명 구성 =====
+            img_prefix = self._make_image_prefix()  # 🔹 추가 (메서드 초반에 한 번만 선언해도 OK)
+
             if saved_count == 0:
-                final_name = f"{row_idx}.png"
+                final_name = f"{img_prefix}_{row_idx}.png"
             else:
-                final_name = f"{row_idx}-{saved_count}.png"
+                final_name = f"{img_prefix}_{row_idx}-{saved_count}.png"
 
             temp_path = save_dir / f"{row_idx}_raw_{saved_count}.png"
             final_path = save_dir / final_name
@@ -1782,9 +1836,48 @@ class ChromeCrawler(QWidget):
         if "costco.co.kr" in host:
             self._log("🧾 코스트코 상품으로 인식 → 엑셀 기록 + 이미지/스펙 캡처")
 
+            from datetime import datetime
+            date_str = datetime.now().strftime("%Y%m%d")
+
+            # ✅ (수정) 하루 1번만 만들고 재사용
+            need_new = (
+                self._sellertool_work_xlsm_path is None
+                or not Path(self._sellertool_work_xlsm_path).exists()
+                or self._sellertool_work_xlsm_date != date_str
+            )
+
+            
+            
+            if need_new:
+                # ✅ (수정) 카테고리 기반 템플릿 선택 → 그 결과(Path)를 그대로 사용
+                try:
+                    template_xlsm_path = self._resolve_sellertool_template_xlsm_path()
+                    self._log(f"✅ 카테고리 기반 템플릿 확정: {template_xlsm_path}")
+                except Exception as e:
+                    self._log(f"❌ 템플릿 확정 실패: {e}")
+                    return
+                        
+                work_xlsm_path = prepare_sellertool_workbook_copy(
+                    template_xlsm_path=template_xlsm_path,           # ✅ 확정된 템플릿
+                    out_dir=UPLOAD_READY_DIR,                        # ✅ 결과물 폴더
+                    output_name=SELLERTOOL_WORKBOOK_NAME,            # ✅ 결과 파일명
+                    add_date_subdir=False,
+                )
+                if work_xlsm_path:
+                    self._sellertool_work_xlsm_path = Path(work_xlsm_path)
+                    self._sellertool_work_xlsm_date = date_str
+                    self._log(f"📄 셀러툴 작업용 엑셀 생성(신규): {self._sellertool_work_xlsm_path}")
+                else:
+                    self._log("⚠️ 셀러툴 작업용 엑셀 생성에 실패했습니다.")
+                    return
+            else:
+                work_xlsm_path = Path(self._sellertool_work_xlsm_path)
+                self._log(f"📄 셀러툴 작업용 엑셀 재사용: {work_xlsm_path}")
+
+            # ==== 엑셀 기록 ====
             row_idx = None
             try:
-                row_idx = self._write_costco_to_seller_excel()
+                row_idx = self._write_costco_to_seller_excel(work_xlsm_path)
             except Exception as e:
                 self._log(f"[오류] 코스트코 엑셀 기록 실패: {e}")
 
@@ -1824,18 +1917,20 @@ class ChromeCrawler(QWidget):
                     upload_day_dir.mkdir(parents=True, exist_ok=True)
 
                     # 4-1) 메인 이미지 (후처리된 row_idx.png)
-                    src_main = image_day_dir / f"{row_idx}.png"
+                    img_prefix = self._make_image_prefix()  # 🔹 추가
+                    
+                    src_main = image_day_dir / f"{img_prefix}_{row_idx}.png"
                     if src_main.exists():
-                        dst_main = upload_day_dir / f"{row_idx}.png"
+                        dst_main = upload_day_dir / f"{img_prefix}_{row_idx}.png"
                         shutil.copy2(src_main, dst_main)
                         self._log(f"📦 업로드 폴더로 메인 이미지 복사: {dst_main}")
                     else:
                         self._log(f"⚠️ 메인 이미지 파일을 찾지 못했습니다: {src_main}")
 
                     # 4-2) 스펙 이미지 (row_idx_spec.png)
-                    src_spec = image_day_dir / f"{row_idx}_spec.png"
+                    src_spec = image_day_dir / f"{img_prefix}_{row_idx}_spec.png"
                     if src_spec.exists():
-                        dst_spec = upload_day_dir / f"{row_idx}_spec.png"
+                        dst_spec = upload_day_dir / f"{img_prefix}_{row_idx}_spec.png"
                         shutil.copy2(src_spec, dst_spec)
                         self._log(f"📦 업로드 폴더로 스펙 이미지 복사: {dst_spec}")
                     else:
@@ -2327,8 +2422,6 @@ class ChromeCrawler(QWidget):
             self.lbl_today_count.setText("금일 상품 갯수 : 오류")
 
 
-
-
     # === 쿠팡 주문현황 버튼 동작 ===
     def coupang_orders(self):
         if self.sheets.ws is None:
@@ -2531,7 +2624,6 @@ class ChromeCrawler(QWidget):
         except Exception as e:
             self._log(f"❌ 주문정리 처리 중 오류: {e}")
 
-    
      
     # === 구글시트 A열 첫 빈 행 상단 테두리 (구글 밑줄) ===
     def google_underline(self):
@@ -2638,7 +2730,9 @@ class ChromeCrawler(QWidget):
 
             self._log(f"📂 코스트코 스펙 이미지 저장 폴더: {save_dir}")
 
-            save_path = save_dir / f"{row_idx}_spec.png"
+            # 2) 저장 경로: {row_idx}_spec.png
+            img_prefix = self._make_image_prefix()  # 🔹 추가
+            save_path = save_dir / f"{img_prefix}_{row_idx}_spec.png"
 
             # 3) 캡처 대상: 패널 전체(mat-expansion-panel#product_specs)
             target_el = spec_panel
@@ -2966,85 +3060,6 @@ class ChromeCrawler(QWidget):
 
         return selected
 
-
-    # === strong_name_rules JSON에 실제로 추가 + 캐시 갱신 ===
-    def _append_strong_name_rule(
-        self,
-        keyword: str,
-        target_category_id: str,
-        reason: str,
-    ) -> None:
-        """
-        rules/coupang/<group>_rules.json 의 __strong_name_rules__ 에
-        { "keywords": [keyword], "target_category_id": ..., "reason": ... } 를 append.
-        그리고 load_coupang_rules 캐시를 비우고 self.cat_matcher.coupang_rules 를 갱신.
-        """
-        try:
-            # 현재 사용 중인 group 에 맞는 rules 파일 찾기 (예: kitchen_rules.json)
-            group = getattr(self.cat_matcher, "group", "kitchen")
-            rules_path = COUPANG_DIR / f"{group}_rules.json"
-
-            if not rules_path.exists():
-                self._log(f"⚠️ strong_name_rules 추가 실패: rules 파일이 없습니다 → {rules_path}")
-                return
-
-            # 1) 기존 JSON 읽기
-            with open(rules_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            rules_list = data.get("__strong_name_rules__", [])
-            if not isinstance(rules_list, list):
-                rules_list = []
-                data["__strong_name_rules__"] = rules_list
-
-            # 2) 이미 같은 (keyword, target_category_id) 조합이 있으면 중복 추가 방지
-            try:
-                target_id_int = int(target_category_id)
-            except Exception:
-                target_id_int = target_category_id  # 혹시 모를 문자열 형태도 허용
-
-            for r in rules_list:
-                kws = r.get("keywords") or []
-                tid = r.get("target_category_id")
-                try:
-                    tid_int = int(tid)
-                except Exception:
-                    tid_int = tid
-                if keyword in kws and tid_int == target_id_int:
-                    self._log(
-                        f"ℹ️ strong_name_rules: 이미 존재하는 규칙입니다 "
-                        f"(keyword='{keyword}', target_category_id={target_category_id})"
-                    )
-                    break
-            else:
-                # 3) 새 규칙 append
-                new_rule = {
-                    "keywords": [keyword],
-                    "target_category_id": target_id_int,
-                    "reason": reason,
-                }
-                rules_list.append(new_rule)
-
-                # 4) JSON 다시 쓰기
-                with open(rules_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-
-                self._log(
-                    f"💾 strong_name_rules 에 규칙 추가 완료: "
-                    f"keyword='{keyword}', target_category_id={target_category_id}"
-                )
-
-                # 5) in-memory 캐시 갱신
-                try:
-                    load_coupang_rules.cache_clear()
-                    self.cat_matcher.coupang_rules = load_coupang_rules(group)
-                    self._log("🔄 CategoryMatcher.coupang_rules 캐시를 갱신했습니다.")
-                except Exception as e:
-                    self._log(f"⚠️ strong_name_rules 캐시 갱신 중 오류: {e}")
-
-        except Exception as e:
-            self._log(f"❌ strong_name_rules JSON 업데이트 중 예외 발생: {e}")
-            
     # ==========================================================
     # 카테고리 수동 선택 콜백 (CategoryMatcher → UI)
     # ==========================================================
@@ -3099,8 +3114,13 @@ class ChromeCrawler(QWidget):
         lst = QListWidget()
         layout.addWidget(lst)
 
-        # 원본 아이템 저장
-        all_items: list[QListWidgetItem] = []
+        # ✅ (중요) 원본 아이템을 "객체로 캐시"하지 않습니다.
+        #    QListWidgetItem은 lst.clear() 같은 동작에서 C++ 레벨로 삭제될 수 있어
+        #    삭제된 객체를 다시 쓰면 "wrapped C/C++ object has been deleted"가 터집니다.
+        #
+        #    따라서:
+        #    - 아이템은 lst에 한 번만 addItem() 해두고,
+        #    - 검색은 clear()가 아니라 setHidden()으로 처리합니다.
 
         for _, row in candidates_df.iterrows():
             cid = str(row["category_id"])
@@ -3112,33 +3132,74 @@ class ChromeCrawler(QWidget):
                 Qt.ItemDataRole.UserRole,
                 {"category_id": cid, "category_path": path},
             )
-            all_items.append(item)
             lst.addItem(item)
 
         # ---------- 검색 필터 ----------
+        def _first_visible_row() -> int:
+            """현재 리스트에서 '보이는' 첫 row를 반환. 없으면 -1."""
+            for i in range(lst.count()):
+                it = lst.item(i)
+                if it is not None and not it.isHidden():
+                    return i
+            return -1
+
         def apply_filter():
-            keyword = search.text().strip().lower()
-            lst.clear()
+            try:
+                keyword = search.text().strip().lower()
 
-            for item in all_items:
-                if not keyword or keyword in item.text().lower():
-                    lst.addItem(item)
+                # ✅ clear() 금지: 아이템이 삭제되어 참조 문제가 생김
+                for i in range(lst.count()):
+                    item = lst.item(i)
+                    if item is None:
+                        continue
 
-            if lst.count() > 0:
-                lst.setCurrentRow(0)
+                    if not keyword:
+                        item.setHidden(False)
+                    else:
+                        item.setHidden(keyword not in item.text().lower())
+
+                # 검색 후 보이는 첫 항목에 커서
+                row0 = _first_visible_row()
+                if row0 >= 0:
+                    lst.setCurrentRow(row0)
+            except Exception as e:
+                print(f"Error occurred while applying filter: {e}")
+                pass
 
         search.textChanged.connect(apply_filter)
 
         # ---------- 이전 / 다음 ----------
+        def _move_to_visible(delta: int):
+            """
+            delta = -1 (이전), +1 (다음)
+            숨겨진 아이템은 스킵하면서 이동
+            """
+            if lst.count() == 0:
+                return
+
+            cur = lst.currentRow()
+            if cur < 0:
+                # 현재 선택이 없다면, 보이는 첫 항목으로
+                row0 = _first_visible_row()
+                if row0 >= 0:
+                    lst.setCurrentRow(row0)
+                return
+
+            i = cur + delta
+            while 0 <= i < lst.count():
+                it = lst.item(i)
+                if it is not None and not it.isHidden():
+                    lst.setCurrentRow(i)
+                    return
+                i += delta
+
+            # 끝까지 갔는데 없으면 그대로 유지 (원하시면 래핑도 가능)
+
         def move_prev():
-            row = lst.currentRow()
-            if row > 0:
-                lst.setCurrentRow(row - 1)
+            _move_to_visible(-1)
 
         def move_next():
-            row = lst.currentRow()
-            if row < lst.count() - 1:
-                lst.setCurrentRow(row + 1)
+            _move_to_visible(+1)
 
         # 단축키
         QShortcut(QKeySequence("Up"), dlg).activated.connect(move_prev)
@@ -3205,6 +3266,9 @@ class ChromeCrawler(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Enter), dlg).activated.connect(on_ok)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), dlg).activated.connect(on_cancel_to_pass_through)
 
+        # ✅ 다이얼로그 열릴 때: 첫 보이는 항목 선택(검색 초기 상태)
+        apply_filter()
+    
         dlg.exec()
 
         # LLM 에게 넘기는 경우: 기존과 동일하게 None 리턴
@@ -3253,9 +3317,13 @@ class ChromeCrawler(QWidget):
                     reason=reason,
                 )
                 
-                # upsert_strong_name_rule 호출 뒤에 캐시 갱신
-                self.cat_matcher.coupang_rules = load_coupang_rules(group)
+                # ✅ (수정) rules 로더 캐시까지 확실히 비우고 즉시 재로드
+                try:
+                    load_coupang_rules.cache_clear()
+                except Exception:
+                    pass
 
+                self.cat_matcher.coupang_rules = load_coupang_rules(group)
 
                 self._log("💾 strong_name_rules JSON 업데이트 완료:")
                 for k in selected_kw:
@@ -3278,5 +3346,70 @@ class ChromeCrawler(QWidget):
             "category_path": cpath,
             "reason": "사용자가 UI에서 수동으로 선택했습니다.",
         }
+
+    # === 이미지 파일명 prefix 생성 ===
+    def _make_image_prefix(self) -> str:
+        """
+        파일명 prefix 생성:
+        - top: coupang_category_path 최상위
+        - sub: coupang_category_path 2단계
+        예) '주방용품>프라이팬/그릴>...' -> '주방용품_프라이팬_그릴'
+        """
+        raw = (self.coupang_category_path or "").strip()
+        parts = [p.strip() for p in raw.split(">") if p.strip()]
+
+        top = parts[0] if len(parts) >= 1 else "etc"
+        sub = parts[1] if len(parts) >= 2 else "etc"
+
+        def _slug(s: str) -> str:
+            s = (s or "").strip()
+            s = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", s)
+            s = re.sub(r"_+", "_", s).strip("_")
+            return s or "etc"
+
+        return f"{_slug(top)}_{_slug(sub)}"
+
+    def _resolve_sellertool_template_xlsm_path(self) -> Path:
+        """
+        쿠팡 셀러툴 템플릿 xlsm 경로를 '카테고리 기반'으로 확정한다.
+        (방식 2: _build_template_index()에서 A/B 정리 완료, 여기서는 인덱스 소비만)
+
+        - 1차: find_template_for_category_path(category_path) → 최종 xlsm 경로(Path) 기대
+        - 실패 시: SELLERTOOL_SOURCE_XLSM_PATH 로 폴백
+        - 최종적으로도 없으면: RuntimeError
+        """
+        category_path = (self.coupang_category_path or "").strip()
+
+        # 1) 카테고리 기반 템플릿
+        if category_path:
+            try:
+                p = find_template_for_category_path(category_path)
+                if p:
+                    p = Path(p)
+                    if p.exists():
+                        return p
+                    else:
+                        self._log(f"⚠️ 카테고리 템플릿 후보가 존재하지 않습니다: {p}")
+            except Exception as e:
+                self._log(f"⚠️ 카테고리 기반 템플릿 조회 실패: {e}")
+        else:
+            self._log("⚠️ coupang_category_path가 비어있어 카테고리 템플릿 선택을 건너뜁니다.")
+
+        # 2) 폴백 템플릿
+        fallback = Path(SELLERTOOL_SOURCE_XLSM_PATH)
+        if fallback.exists():
+            self._log(f"ℹ️ 기본 템플릿으로 폴백: {fallback}")
+            return fallback
+
+        # 3) 최종 실패
+        raise RuntimeError(
+            "템플릿 xlsm을 찾지 못했습니다.\n"
+            f"- coupang_category_path: {category_path or '(없음)'}\n"
+            f"- fallback: {fallback}\n"
+            "해결:\n"
+            "1) coupang_upload_form 내 해당 카테고리 템플릿 xlsm 존재 여부 확인\n"
+            "2) 템플릿 인덱스 JSON을 최신으로 재생성(build_coupang_upload_index)\n"
+            "3) config.py의 SELLERTOOL_SOURCE_XLSM_PATH를 실제 경로로 수정\n"
+        )
 
 
