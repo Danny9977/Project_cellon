@@ -21,52 +21,16 @@ from .config import (
 )
 from .core.product import Product
 
+from openpyxl import load_workbook
+from openpyxl.workbook.workbook import Workbook
+from typing import Dict, Tuple
 
+_WB_CACHE: Dict[str, Tuple[Workbook, float]] = {}
+# key: str(dest_path), value: (workbook, last_mtime)
 
 # =========================
 # 유틸
 # =========================
-
-
-def prepare_sellertool_workbook_copy(
-    template_xlsm_path: str | Path,
-    out_dir: str | Path,
-    output_name: str | None = None,
-    add_date_subdir: bool = False,
-) -> Path:
-    """
-    템플릿 xlsm을 작업용 복사본으로 만들어 반환.
-    - template_xlsm_path: 원본 템플릿 (예: sellertool_upload_toplevel.xlsm)
-    - out_dir: 복사본을 둘 폴더
-    - output_name: 복사본 파일명 (None이면 템플릿명 기반 자동)
-    - add_date_subdir: True면 out_dir/YYYYMMDD 하위에 생성
-    """
-    template_xlsm_path = Path(template_xlsm_path)
-    out_dir = Path(out_dir)
-
-    if not template_xlsm_path.exists():
-        raise FileNotFoundError(
-            "템플릿 xlsm을 찾지 못했습니다.\n"
-            f"- template_xlsm_path: {template_xlsm_path}\n"
-            "해결:\n"
-            "1) assets/crawling_temp/coupang_upload_form/ 아래에 sellertool_upload.xlsm을 넣거나\n"
-            "2) config.py의 SELLERTOOL_SOURCE_XLSM_PATH를 실제 템플릿 위치로 수정하세요."
-        )
-
-    if add_date_subdir:
-        date_str = datetime.now().strftime("%Y%m%d")
-        out_dir = out_dir / date_str
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    if not output_name:
-        output_name = template_xlsm_path.name.replace(".xlsm", "_work.xlsm")
-
-    dst = out_dir / output_name
-    shutil.copy2(template_xlsm_path, dst)
-    return dst
-
-
 
 def _safe_str(v) -> str:
     if v is None:
@@ -432,8 +396,9 @@ def _copy_row_full(ws: Worksheet, src_row: int, dst_row: int, max_col: int = 120
             dst_cell.alignment = copy(src_cell.alignment)
 
     # 2. 데이터 유효성(드롭다운) 복사
-    for dv in ws.data_validations.dataValidation:
-        for range_obj in dv.sqref.ranges:
+    for dv in list(ws.data_validations.dataValidation):
+        ranges_snapshot = list(dv.sqref.ranges)
+        for range_obj in ranges_snapshot:
             if range_obj.min_row <= src_row <= range_obj.max_row:
                 for col in range(range_obj.min_col, range_obj.max_col + 1):
                     addr = f"{get_column_letter(col)}{dst_row}"
@@ -474,6 +439,62 @@ def _fill_product_data(
     if col_search is not None and search_keywords:
         joined = ", ".join([_safe_str(k) for k in search_keywords if _safe_str(k)])
         ws.cell(row=row, column=col_search).value = joined
+
+
+
+def _get_cached_workbook(xlsm_path: Path) -> Workbook:
+    """
+    같은 xlsm을 반복해서 열지 않기 위한 간단 캐시.
+    - 파일 mtime이 바뀌면(외부 수정/복사 등) 캐시 무효화 후 재로딩
+    """
+    key = str(xlsm_path)
+    mtime = xlsm_path.stat().st_mtime
+
+    cached = _WB_CACHE.get(key)
+    if cached:
+        wb, cached_mtime = cached
+        if cached_mtime == mtime:
+            return wb
+
+    wb = load_workbook(xlsm_path, keep_vba=True)
+    _WB_CACHE[key] = (wb, mtime)
+    return wb
+
+
+def _save_cached_workbook(xlsm_path: Path, wb: Workbook) -> None:
+    """
+    저장 후 mtime 갱신(캐시 유지)
+    """
+    wb.save(xlsm_path)
+    _WB_CACHE[str(xlsm_path)] = (wb, xlsm_path.stat().st_mtime)
+
+
+def prepare_sellertool_workbook_copy(
+    template_xlsm_path: Path,
+    out_dir: Path,
+    output_name: str | None = None,
+    add_date_subdir: bool = False,
+) -> Path:
+    """
+    ✅ output_name이 None이면 '템플릿 파일명 그대로' 복사/재사용
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if add_date_subdir:
+        out_dir = out_dir / datetime.now().strftime("%Y-%m-%d")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    if output_name:
+        dest_path = out_dir / output_name
+    else:
+        dest_path = out_dir / Path(template_xlsm_path).name  # ✅ 파일명 유지
+
+    # ✅ 이미 upload_ready에 있으면 복사하지 않음(재사용)
+    if not dest_path.exists():
+        shutil.copy2(template_xlsm_path, dest_path)
+
+    return dest_path
 
 
 # =========================
@@ -524,9 +545,7 @@ def prepare_and_fill_sellertool(
 
     # ---- 2) upload_ready 폴더로 '원래 파일명' 그대로 복사 ----
     UPLOAD_READY_DIR.mkdir(parents=True, exist_ok=True)
-    top = _safe_str(coupang_category_path).split(">")[0].strip()  # 예: 주방용품
-    suffix = top if top else "etc"
-    dest_name = f"{template_path.stem}_{suffix}{template_path.suffix}"
+    dest_name = template_path.name
     dest_path = UPLOAD_READY_DIR / dest_name
 
     # 같은 템플릿을 여러 번 쓰는 경우:
@@ -535,7 +554,7 @@ def prepare_and_fill_sellertool(
         shutil.copy2(template_path, dest_path)
 
     # ---- 3) 엑셀 열기 ----
-    wb = load_workbook(dest_path, keep_vba=True, data_only=False)
+    wb = _get_cached_workbook(dest_path)
 
     if SELLERTOOL_SHEET_NAME not in wb.sheetnames:
         raise RuntimeError(
@@ -562,7 +581,7 @@ def prepare_and_fill_sellertool(
     )
 
     # ---- 7) 저장 ----
-    wb.save(dest_path)
+    _save_cached_workbook(dest_path, wb)
     
     
     print("[DEBUG] template_path =", template_path)

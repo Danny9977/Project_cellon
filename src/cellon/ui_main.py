@@ -77,7 +77,7 @@ from .apis.coupang_client import (
 
 # 이미지 후처리 (배경제거 + 배경 합성)
 from .image_process import process_captured_folder   # 🔹 추가
-
+from cellon.core.product import Product, SourceDomain
 
 
 # ============= 중복이기는 한데, 너무 많이 가져와야 해서 그냥 중복상태로 둠 ==========
@@ -123,12 +123,12 @@ from .category_ai.category_worker import CategoryBuildWorker
 # coupang_upload_form 내 엑셀파일 로 부터 검색 시간 줄이기 위한 json 파일 생성 까지 완료 - ui 버튼 내 기능 연결 전
 from build_coupang_upload_index import build_coupang_upload_index
 
-# 셀러툴 엑셀 파일 카피 관련 함수
-from cellon.sellertool_excel import prepare_sellertool_workbook_copy
 
-
-# ✅ 템플릿 리졸버(1번 방식): best_key 선택 → 최종 xlsm 경로 확정
-from cellon.sellertool_excel import find_template_for_category_path
+from cellon.sellertool_excel import (
+    prepare_sellertool_workbook_copy,       # ✅ 작업용 엑셀 복사본 준비
+    prepare_and_fill_sellertool,            # ✅ 셀러툴 엑셀 채우기
+    find_template_for_category_path,        # ✅ 템플릿 리졸버(1번 방식): best_key 선택 → 최종 xlsm 경로 확정
+)
 
 
 # =========================
@@ -1849,24 +1849,30 @@ class ChromeCrawler(QWidget):
             
             
             if need_new:
-                # ✅ (수정) 카테고리 기반 템플릿 선택 → 그 결과(Path)를 그대로 사용
                 try:
                     template_xlsm_path = self._resolve_sellertool_template_xlsm_path()
                     self._log(f"✅ 카테고리 기반 템플릿 확정: {template_xlsm_path}")
                 except Exception as e:
                     self._log(f"❌ 템플릿 확정 실패: {e}")
                     return
-                        
-                work_xlsm_path = prepare_sellertool_workbook_copy(
-                    template_xlsm_path=template_xlsm_path,           # ✅ 확정된 템플릿
-                    out_dir=UPLOAD_READY_DIR,                        # ✅ 결과물 폴더
-                    output_name=SELLERTOOL_WORKBOOK_NAME,            # ✅ 결과 파일명
-                    add_date_subdir=False,
+                product = Product(
+                    source_domain=SourceDomain.COSTCO,
+                    raw_name=self.crawled_title or "",
+                    source_url=self.crawled_url or None,
                 )
+                       
+                work_xlsm_path = prepare_and_fill_sellertool(
+                    product=product,
+                    coupang_category_id=self.coupang_category_id,      # ✅ 꼭 필요
+                    coupang_category_path=self.coupang_category_path,  # ✅ 꼭 필요
+                    price=self.crawled_price,
+                    search_keywords=None,
+                )
+                
                 if work_xlsm_path:
-                    self._sellertool_work_xlsm_path = Path(work_xlsm_path)
+                    self._sellertool_work_xlsm_path = work_xlsm_path
                     self._sellertool_work_xlsm_date = date_str
-                    self._log(f"📄 셀러툴 작업용 엑셀 생성(신규): {self._sellertool_work_xlsm_path}")
+                    self._log(f"✅ 셀러툴 작업 파일 반영 완료: {work_xlsm_path}")
                 else:
                     self._log("⚠️ 셀러툴 작업용 엑셀 생성에 실패했습니다.")
                     return
