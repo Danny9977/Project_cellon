@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import dataclass
 from copy import copy
 from datetime import datetime
 from functools import lru_cache
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .config import (
@@ -25,8 +26,153 @@ from openpyxl import load_workbook
 from openpyxl.workbook.workbook import Workbook
 from typing import Dict, Tuple
 
+from copy import copy
+from openpyxl.worksheet.worksheet import Worksheet
+
+# ===============================
+# 템플릿 파일명 접두어(prefix) 추출 + 이미지명 생성
+# ===============================
+
+import re
+from pathlib import Path
+
+_PREFIX_RE = re.compile(r"^sellertool_upload_(?P<prefix>\d{1,3}-\d{1,3})_", re.IGNORECASE)
+
+
+
 _WB_CACHE: Dict[str, Tuple[Workbook, float]] = {}
 # key: str(dest_path), value: (workbook, last_mtime)
+
+# ===============================
+# 입력 행 판별 (A/B/C 기준)
+# ===============================
+
+def _cell_str(ws, row: int, col_letter: str) -> str:
+    col = column_index_from_string(col_letter)
+    v = ws.cell(row=row, column=col).value
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    return str(v).strip()
+
+
+def is_empty_row_abc(ws, row: int) -> bool:
+    """
+    A/B/C 중 2개 이상 비어있으면 입력 가능한 빈 행
+    """
+    vals = [
+        _cell_str(ws, row, "A"),
+        _cell_str(ws, row, "B"),
+        _cell_str(ws, row, "C"),
+    ]
+    empty_cnt = sum(1 for x in vals if x == "")
+    return empty_cnt >= 2
+
+
+def find_next_input_row(ws, start_row: int, max_scan: int = 5000) -> int:
+    for r in range(start_row, start_row + max_scan):
+        if is_empty_row_abc(ws, r):
+            return r
+    raise RuntimeError("ABC 기준 입력 가능한 빈 행을 찾지 못했습니다.")
+
+# --- prefix 로 upload ready 에 들어갈 xlsm file 의 번호 관련 코드 ----
+def extract_template_prefix_from_filename(xlsm_path: Path) -> str | None:
+    """
+    예:
+      sellertool_upload_14-10_주방용품>취사도구.xlsm -> '14-10'
+    """
+    name = xlsm_path.name
+    m = _PREFIX_RE.match(name)
+    if not m:
+        return None
+    return m.group("prefix")
+
+def build_prefixed_image_names(prefix: str, row_idx: int) -> tuple[str, str]:
+    """
+    예:
+      prefix='14-10', row_idx=125
+    결과:
+      14-10_125.png
+      14-10_125_spec.png
+    """
+    base = f"{prefix}_{row_idx}"
+    return f"{base}.png", f"{base}_spec.png"
+
+
+# ===============================
+# Template source / 구분자
+# ===============================
+
+def find_separator_row(ws, keyword="여기서부터", max_scan: int = 5000) -> int:
+    """
+    ✅ 구분자 행을 찾는다.
+    - A열에서 keyword 포함 문구를 찾으면 그 행 번호 리턴
+    - 없으면: 템플릿 마지막 행 바로 아래에 구분자 행을 자동 삽입하고 그 행 번호 리턴
+
+    이유:
+    - 템플릿마다 구분자 존재 여부가 다름
+    - 최초 기록 시 구분자가 없는 경우가 흔함
+    """
+    # 1) 기존 구분자 탐색 (A열)
+    for r in range(1, min(ws.max_row, max_scan) + 1):
+        v = ws.cell(row=r, column=1).value
+        if isinstance(v, str) and keyword in v:
+            return r
+
+    # 2) 없으면 자동 삽입: "템플릿 마지막(=A열 값이 있는 마지막 행)" 아래에 삽입
+    last_template_row = 0
+    for r in range(ws.max_row, 0, -1):
+        v = ws.cell(row=r, column=1).value
+        if v is not None and str(v).strip() != "":
+            last_template_row = r
+            break
+
+    # 템플릿이 비어있는 예외 케이스
+    if last_template_row <= 0:
+        last_template_row = 1
+
+    sep_row = last_template_row + 1
+
+    sep_text = "------------------ 여기서부터 크롤링 데이터 등록 ------------------"
+    ws.cell(row=sep_row, column=1).value = sep_text
+
+    # (선택) 구분자 강조(노란색)
+    try:
+        from openpyxl.styles import PatternFill
+        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+        ws.cell(row=sep_row, column=1).fill = yellow_fill
+    except Exception:
+        pass
+
+    return sep_row
+
+
+
+def find_template_source_row(
+    ws,
+    ck_candidates=("기타 재화", "기타재화"),
+    max_scan: int = 200,
+):
+    for r in range(1, max_scan + 1):
+        v = ws["CK" + str(r)].value
+        if isinstance(v, str) and v.strip() in ck_candidates:
+            return r
+    raise RuntimeError("CK 기준 Template source 행을 찾지 못했습니다.")
+
+
+# ===============================
+# Template source 보호 write
+# ===============================
+
+def safe_set_cell(ws, row: int, col: str, value, template_source_max_row: int):
+    if row <= template_source_max_row:
+        raise RuntimeError(
+            f"Template source 영역({row})에 write 시도 차단: {col}{row}"
+        )
+    ws[f"{col}{row}"].value = value
+
+
 
 # =========================
 # 유틸
@@ -74,6 +220,35 @@ def _normalize_category_text(text: str) -> str:
 
     return t
 
+# ========================
+# 가격 계산 정책
+# ========================
+def calculate_pricing_from_base(base_price: int) -> tuple[int, int, int, int]:
+    """
+    ui_main.py 에 있던 기존 가격 정책을 그대로 사용
+
+    반환:
+      (bj_price, bl_price, stock_qty, lead_time)
+    """
+    if base_price <= 0:
+        return 0, 0, 0, 0
+
+    # BJ: 판매가
+    if base_price <= 30000:
+        bj_price = int(round(base_price * 1.3))
+    elif base_price <= 50000:
+        bj_price = int(round(base_price * 1.2))
+    else:
+        bj_price = int(round(base_price * 1.15))
+
+    # BL: 할인 기준가 (기존 로직: BJ * 1.05)
+    bl_price = int(round(bj_price * 1.05)) if bj_price > 0 else 0
+
+    # BM / BN: 기존 고정 정책
+    stock_qty = 999
+    lead_time = 2
+
+    return bj_price, bl_price, stock_qty, lead_time
 
 
 # =========================
@@ -376,33 +551,100 @@ def _pick_template_row(
     return candidates[0]
 
 
+# ===== DataValidation (드롭다운) 캐시: src_row에 걸린 DV만 추출해서 재사용 =====
+
+@dataclass(frozen=True)
+class _DVSpan:
+    dv: object
+    min_col: int
+    max_col: int
+
+# key: id(ws) -> (src_row, spans)
+_DV_TEMPLATE_CACHE: dict[int, tuple[int, list[_DVSpan]]] = {}
+
+
+def _get_dv_template_for_src_row(ws: Worksheet, src_row: int) -> list[_DVSpan]:
+    """
+    src_row에 걸린 DV만 추려서 캐싱합니다.
+    - 템플릿 DV가 수천개여도, src_row에 걸린 건 보통 10~20개대라서
+      write가 반복될수록 성능이 크게 좋아집니다.
+    """
+    key = id(ws)
+    cached = _DV_TEMPLATE_CACHE.get(key)
+    if cached and cached[0] == src_row:
+        return cached[1]
+
+    spans: list[_DVSpan] = []
+    dvs = list(ws.data_validations.dataValidation) if ws.data_validations else []
+    for dv in dvs:
+        try:
+            ranges = list(dv.sqref.ranges)  # 스냅샷
+        except Exception:
+            continue
+
+        for r in ranges:
+            if r.min_row <= src_row <= r.max_row:
+                spans.append(_DVSpan(dv=dv, min_col=r.min_col, max_col=r.max_col))
+
+    _DV_TEMPLATE_CACHE[key] = (src_row, spans)
+    return spans
+
+
+def _dv_has_addr(dv, addr: str) -> bool:
+    """중복 add 방지용(가벼운 체크)"""
+    try:
+        return addr in str(dv.sqref).split()
+    except Exception:
+        return False
+
+
 def _copy_row_full(ws: Worksheet, src_row: int, dst_row: int, max_col: int = 120) -> None:
     """
-    [수정] src_row → dst_row 로 값, 스타일, 데이터 유효성(드롭다운)까지 모두 복사.
-    단순 값 복사에서 '스타일(색상, 테두리, 수식 등)'까지 복사하도록 변경.
-    쿠팡 엑셀은 양식 서식이 중요하므로 copy 모듈을 사용합니다.
+    src_row → dst_row 로 값, 스타일, 데이터 유효성(드롭다운)까지 복사.
+    - row height 복사 (있을 때만)
+    - 스타일은 _style 전체 복사로 누락 최소화
+    - DV는 src_row에 걸린 것만 캐싱하여 성능 개선
+    - DV add 중복 방지
     """
-    # 1. 스타일 및 값 복사
+
+    # 0) row height 복사(지정된 경우만)
+    try:
+        h = ws.row_dimensions[src_row].height
+        if h is not None:
+            ws.row_dimensions[dst_row].height = h
+    except Exception:
+        pass
+
+    # 1) 값 + 스타일 복사
     for col in range(1, max_col + 1):
         src_cell = ws.cell(row=src_row, column=col)
         dst_cell = ws.cell(row=dst_row, column=col)
-        dst_cell.value = src_cell.value
-        
-        if src_cell.has_style:
-            dst_cell.font = copy(src_cell.font)
-            dst_cell.border = copy(src_cell.border)
-            dst_cell.fill = copy(src_cell.fill)
-            dst_cell.number_format = copy(src_cell.number_format)
-            dst_cell.alignment = copy(src_cell.alignment)
 
-    # 2. 데이터 유효성(드롭다운) 복사
-    for dv in list(ws.data_validations.dataValidation):
-        ranges_snapshot = list(dv.sqref.ranges)
-        for range_obj in ranges_snapshot:
-            if range_obj.min_row <= src_row <= range_obj.max_row:
-                for col in range(range_obj.min_col, range_obj.max_col + 1):
-                    addr = f"{get_column_letter(col)}{dst_row}"
-                    dv.add(addr)
+        dst_cell.value = src_cell.value
+
+        # 스타일 전체 복사(가장 안정적)
+        if src_cell.has_style:
+            dst_cell._style = copy(src_cell._style)
+
+        # 필요 시만 유지(대부분 템플릿에서 큰 영향은 없지만 안전)
+        if src_cell.hyperlink:
+            dst_cell.hyperlink = copy(src_cell.hyperlink)
+        if src_cell.comment:
+            dst_cell.comment = copy(src_cell.comment)
+
+    # 2) 데이터 유효성(드롭다운) 복사: src_row에 걸린 것만 캐싱해서 적용
+    spans = _get_dv_template_for_src_row(ws, src_row)
+    for span in spans:
+        dv = span.dv
+        for col in range(span.min_col, span.max_col + 1):
+            addr = f"{get_column_letter(col)}{dst_row}"
+            if _dv_has_addr(dv, addr):
+                continue
+            try:
+                dv.add(addr)
+            except Exception:
+                pass
+
 
 def _fill_product_data(
     ws: Worksheet,
@@ -496,6 +738,102 @@ def prepare_sellertool_workbook_copy(
 
     return dest_path
 
+# =========================
+# data 시트 행 쓰기
+# =========================
+def write_coupang_row(
+    ws,
+    product_name: str,
+    calculated_price: int,        # BJ (판매가)
+    discount_base_price: int,     # BL (할인 기준가)
+    stock_qty: int,               # BM
+    lead_time: int,               # BN
+    main_image_name: str,         # CZ
+    spec_image_name: str,         # DF
+):
+    """
+    - Template source 영역에는 절대 write 하지 않는다
+    - 구분자 아래, ABC 기준 빈 행에만 append
+    """
+
+    # 1. 구분자 / Template source 영역
+    sep_row = find_separator_row(ws)
+    template_source_max_row = sep_row - 1
+
+    # 2. Template source 행 (CK 기준)
+    src_row = find_template_source_row(ws)
+
+    # 3. 입력 대상 행
+    dst_row = find_next_input_row(ws, sep_row + 1)
+
+    # 4. Template source → 입력 행 복사
+    _copy_row_full(
+        ws,
+        src_row=src_row,
+        dst_row=dst_row,
+        max_col=ws.max_column,
+    )
+
+    # 5. 값 쓰기 (dst_row ONLY)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    safe_set_cell(ws, dst_row, "B", product_name, template_source_max_row)
+    safe_set_cell(ws, dst_row, "C", today, template_source_max_row)
+
+    # G/H: 등록상품명의 첫 단어(예: "AMT")
+    first_word = (product_name.split()[0] if product_name and product_name.split() else "")
+    safe_set_cell(ws, dst_row, "G", first_word, template_source_max_row)
+    safe_set_cell(ws, dst_row, "H", first_word, template_source_max_row)
+
+    # 가격
+    safe_set_cell(ws, dst_row, "BJ", calculated_price, template_source_max_row)
+    safe_set_cell(ws, dst_row, "BL", discount_base_price, template_source_max_row)
+
+    # 사용자 지정값
+    safe_set_cell(ws, dst_row, "BM", stock_qty, template_source_max_row)
+    safe_set_cell(ws, dst_row, "BN", lead_time, template_source_max_row)
+
+    # 이미지명
+    safe_set_cell(ws, dst_row, "CZ", main_image_name, template_source_max_row)
+    safe_set_cell(ws, dst_row, "DF", spec_image_name, template_source_max_row)
+
+    return dst_row
+
+
+
+def copy_row_with_style(ws: Worksheet, src_row: int, dst_row: int, max_col: int=120):
+    """
+    src_row의 셀 값/스타일을 dst_row로 복사.
+    - 값(value)
+    - 스타일(font, fill, border, alignment, number_format, protection)
+    - row 높이
+    """
+    # row height 복사
+    if src_row in ws.row_dimensions:
+        ws.row_dimensions[dst_row].height = ws.row_dimensions[src_row].height
+
+    for col in range(1, max_col + 1):
+        c1 = ws.cell(row=src_row, column=col)
+        c2 = ws.cell(row=dst_row, column=col)
+
+        c2.value = c1.value
+
+        if c1.has_style:
+            c2.font = copy(c1.font)
+            c2.fill = copy(c1.fill)
+            c2.border = copy(c1.border)
+            c2.alignment = copy(c1.alignment)
+            c2.number_format = c1.number_format
+            c2.protection = copy(c1.protection)
+            c2.comment = c1.comment  # 필요하면 copy()로
+    
+    # 데이터 유효성(드롭다운) 복사
+    for dv in ws.data_validations.dataValidation:
+        for rng in dv.ranges:
+            if rng.min_row <= src_row <= rng.max_row:
+                for col in range(rng.min_col, rng.max_col + 1):
+                    dv.add(f"{get_column_letter(col)}{dst_row}")
+
 
 # =========================
 # 3) 퍼블릭 API
@@ -564,21 +902,30 @@ def prepare_and_fill_sellertool(
 
     ws = wb[SELLERTOOL_SHEET_NAME]
 
-    # ---- 4) 템플릿 행 선택 (category_id + top-level 카테고리) ----
-    src_row = _pick_template_row(ws, coupang_category_id, coupang_category_path)
+    # ---- 4) 가격 정책 계산 (기존 ui_main.py 로직 재사용) ----
+    base_price = int(price) if price is not None else 0
 
-    # ---- 5) 첫 번째 빈 입력 행 찾기 (A열 기준) ----
-    dst_row = _get_target_insertion_row(ws)
+    bj_price, bl_price, stock_qty, lead_time = calculate_pricing_from_base(base_price)
 
-    # ---- 6) 템플릿 행 복사 후 상품 데이터 덮어쓰기 ----
-    _copy_row_full(ws, src_row, dst_row, max_col=120)
-    _fill_product_data(
-        ws,
-        dst_row,
-        product=product,
-        price=price,
-        search_keywords=search_keywords,
+    # ---- 5) 데이터 행 추가 (Template source 보호 로직 사용) ----
+    dst_row = write_coupang_row(
+        ws=ws,
+        product_name=product.display_name,
+        calculated_price=bj_price,        # BJ
+        discount_base_price=bl_price,     # BL
+        stock_qty=stock_qty,              # BM
+        lead_time=lead_time,              # BN
+        main_image_name="",               # 일단 빈 값(아래에서 채움)
+        spec_image_name="",
     )
+    # ✅ prefix 기반 이미지명 확정 → CZ/DF에 실제로 기록
+    prefix = extract_template_prefix_from_filename(dest_path) or "no-prefix"
+    main_img, spec_img = build_prefixed_image_names(prefix, dst_row)
+
+    template_source_row = find_template_source_row(ws)
+    template_source_max_row = find_template_source_row(ws)
+    safe_set_cell(ws, dst_row, "CZ", main_img, template_source_max_row)
+    safe_set_cell(ws, dst_row, "DF", spec_img, template_source_max_row)
 
     # ---- 7) 저장 ----
     _save_cached_workbook(dest_path, wb)

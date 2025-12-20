@@ -130,6 +130,11 @@ from cellon.sellertool_excel import (
     find_template_for_category_path,        # ✅ 템플릿 리졸버(1번 방식): best_key 선택 → 최종 xlsm 경로 확정
 )
 
+from cellon.sellertool_excel import (
+    extract_template_prefix_from_filename,
+    build_prefixed_image_names,
+)
+
 
 # =========================
 # 설정값 (튜닝 포인트)
@@ -1426,7 +1431,8 @@ class ChromeCrawler(QWidget):
         self._bring_sheet_to_front()
 
     # ---------- 코스트코 → sellertool_upload.xlsm 기록 ----------
-    def _write_costco_to_seller_excel(self, xlsm_path: str | Path):
+    # 삭제 및 정리 필요
+    def _write_costco_to_seller_excel(self, work_xlsm_path: Path, prefix: str) -> int:
         """
         코스트코 상품(현재 self.crawled_title / self.crawled_price / self.crawled_url)을
         sellertool_upload.xlsm 에 다음 규칙으로 기록한다.
@@ -1453,14 +1459,14 @@ class ChromeCrawler(QWidget):
         - CZ : 행번호.png (예: 5행이면 '5.png')
         """
         
+        xlsm_path = Path(work_xlsm_path)  # ✅ 인자 이름 그대로 정규화
+        
         # ✅ [추가] xlsm_path 방어 (None/"" 방지)
         if not xlsm_path:
             self._log("❌ 코스트코 엑셀 기록: xlsm_path가 비어있습니다.")
             return None
 
         
-        xlsm_path = Path(xlsm_path)  # ✅ str → Path 정규화
-
         if not self.crawled_title:
             self._log("⚠️ 코스트코 엑셀 기록: 상품명이 없습니다.")
             return None
@@ -1496,6 +1502,15 @@ class ChromeCrawler(QWidget):
                 break
             row_idx += 1
 
+        # ✅ CZ / DF에 이미지명 기록 (접두어 포함)
+        main_img, spec_img = build_prefixed_image_names(prefix, row_idx)
+
+        # (중요) template source 영역(5행 등)에 쓰면 안 됨 — 반드시 row_idx 행에만
+        ws[f"CZ{row_idx}"].value = main_img
+        ws[f"DF{row_idx}"].value = spec_img
+
+        
+        
         # ==== 2) 공통 데이터 준비 ====
         full_name = self.crawled_title.strip()
         words = full_name.split()
@@ -1525,27 +1540,6 @@ class ChromeCrawler(QWidget):
         # ==== 2-1) 카테고리 엑셀 C~J 열 메타 가져오기  🔹 ====
         meta_values = [""] * 8  # C~J 8개 → J~Q 8개
 
-        try:
-            cid = (self.coupang_category_id or "").strip()
-            if cid:
-                row = get_category_row_by_id(cid)
-                if row is not None:
-                    meta_values = [
-                        safe_str(row.get("col_c")),
-                        safe_str(row.get("col_d")),
-                        safe_str(row.get("col_e")),
-                        safe_str(row.get("col_f")),
-                        safe_str(row.get("col_g")),
-                        safe_str(row.get("col_h")),
-                        safe_str(row.get("col_i")),
-                        safe_str(row.get("col_j")),
-                    ]
-                else:
-                    self._log(f"ℹ️ 카테고리 마스터에서 category_id={cid} 행을 찾지 못했습니다. (C~J는 공란으로 둡니다.)")
-            else:
-                self._log("ℹ️ coupang_category_id 가 없어 C~J 메타를 채우지 않습니다.")
-        except Exception as e:
-            self._log(f"⚠️ 카테고리 엑셀 메타 조회 중 오류: {e}")
 
 
         # ==== 3) A~I 채우기 ====
@@ -1559,15 +1553,7 @@ class ChromeCrawler(QWidget):
         except Exception:
             cat_cell = ""
             
-        ws.cell(row=row_idx, column=1).value  = cat_cell   # A
-        ws.cell(row=row_idx, column=2).value  = full_name  # B
-        ws.cell(row=row_idx, column=3).value  = today_str  # C
-        ws.cell(row=row_idx, column=4).value  = ""         # D
-        ws.cell(row=row_idx, column=5).value  = "새상품"   # E
-        ws.cell(row=row_idx, column=6).value  = ""         # F
-        ws.cell(row=row_idx, column=7).value  = first_word # G
-        ws.cell(row=row_idx, column=8).value  = first_word # H
-        ws.cell(row=row_idx, column=9).value  = ""         # I
+ 
 
          # ==== 4) J~Q: 카테고리 엑셀 C~J 복사  🔹 ====
         col_J = column_index_from_string("J")
@@ -1581,33 +1567,12 @@ class ChromeCrawler(QWidget):
             ws.cell(row=row_idx, column=col).value = ""
 
         # ==== 6) 확장 열(BJ/BL/BM/BN/BX/CK/CZ/DC) 채우기 ====
-        col_BJ = column_index_from_string("BJ")
-        col_BL = column_index_from_string("BL")
-        col_BM = column_index_from_string("BM")
-        col_BN = column_index_from_string("BN")
-        col_BX = column_index_from_string("BX")
-        col_CK = column_index_from_string("CK")
-        col_CZ = column_index_from_string("CZ")
-        col_DC = column_index_from_string("DC")   # 🔹 추가
 
-        ws.cell(row=row_idx, column=col_BJ).value = bj_price
-        ws.cell(row=row_idx, column=col_BL).value = bl_price
-        ws.cell(row=row_idx, column=col_BM).value = 999
-        ws.cell(row=row_idx, column=col_BN).value = 2
-        ws.cell(row=row_idx, column=col_BX).value = "상세정보별도표기"
-        ws.cell(row=row_idx, column=col_CK).value = "기타재화"
         
-        img_prefix = self._make_image_prefix()  # 🔹 추가
+        img_prefix = prefix  # ✅ 템플릿 prefix 사용(예: 14-10)
 
-        ws.cell(row=row_idx, column=col_CZ).value = f"{img_prefix}_{row_idx}.png"
-        ws.cell(row=row_idx, column=col_DC).value = f"{img_prefix}_{row_idx}_spec.png"
 
-        try:
-            wb.save(xlsm_path)
-            self._log(f"✅ 코스트코 상품 기록 완료 → 행 {row_idx}")
-        except Exception as e:
-            self._log(f"❌ 엑셀 저장 실패: {e}")
-            return None
+        
 
         # URL 클립보드 (선택)
         try:
@@ -1633,7 +1598,7 @@ class ChromeCrawler(QWidget):
         top = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", top)
         return top or "etc"
 
-    def _capture_costco_image(self, row_idx: int, date_str: str | None = None):
+    def _capture_costco_image(self, row_idx: int, prefix: str, date_str: str | None = None):
         """
         코스트코 상품 이미지 여러 장 저장 (다운로드 우선, 실패 시 캡처 백업)
         - 메인(가장 큰) 이미지는 건너뛰고
@@ -1729,7 +1694,7 @@ class ChromeCrawler(QWidget):
                 continue
 
             # ===== 파일명 구성 =====
-            img_prefix = self._make_image_prefix()  # 🔹 추가 (메서드 초반에 한 번만 선언해도 OK)
+            img_prefix = prefix  # ✅ 템플릿 prefix 사용(예: 14-10)
 
             if saved_count == 0:
                 final_name = f"{img_prefix}_{row_idx}.png"
@@ -1880,10 +1845,17 @@ class ChromeCrawler(QWidget):
                 work_xlsm_path = Path(self._sellertool_work_xlsm_path)
                 self._log(f"📄 셀러툴 작업용 엑셀 재사용: {work_xlsm_path}")
 
+            # ==== prefix 추출 (이미지명 전용) ====
+            prefix = extract_template_prefix_from_filename(Path(work_xlsm_path))
+            if not prefix:
+                self._log(f"⚠️ 템플릿 파일명에서 접두어(prefix)를 찾지 못했습니다: {Path(work_xlsm_path).name}")
+                # 그래도 진행은 가능(임시 fallback) — 하지만 원칙상 prefix는 있어야 함
+                prefix = "no-prefix"
+
             # ==== 엑셀 기록 ====
             row_idx = None
             try:
-                row_idx = self._write_costco_to_seller_excel(work_xlsm_path)
+                row_idx = self._write_costco_to_seller_excel(work_xlsm_path, prefix=prefix)
             except Exception as e:
                 self._log(f"[오류] 코스트코 엑셀 기록 실패: {e}")
 
@@ -1896,13 +1868,13 @@ class ChromeCrawler(QWidget):
 
                 # (1) 코스트코 상품 이미지 캡처 → image/YYYYMMDD
                 try:
-                    self._capture_costco_image(row_idx, date_str)
+                    self._capture_costco_image(row_idx, prefix, date_str)
                 except Exception as e:
                     self._log(f"[오류] 코스트코 이미지 캡처 실패: {e}")
 
                 # (2) 스펙 영역 캡처 → image/YYYYMMDD/{row_idx}_spec.png
                 try:
-                    self._capture_costco_spec(row_idx, date_str)
+                    self._capture_costco_spec(row_idx, prefix, date_str)
                 except Exception as e:
                     self._log(f"[오류] 코스트코 스펙 캡처 실패: {e}")
 
@@ -1923,20 +1895,20 @@ class ChromeCrawler(QWidget):
                     upload_day_dir.mkdir(parents=True, exist_ok=True)
 
                     # 4-1) 메인 이미지 (후처리된 row_idx.png)
-                    img_prefix = self._make_image_prefix()  # 🔹 추가
-                    
-                    src_main = image_day_dir / f"{img_prefix}_{row_idx}.png"
+                    # img_prefix = prefix  # ✅ 템플릿 prefix 사용(예: 14-10)
+
+                    src_main = image_day_dir / f"{prefix}_{row_idx}.png"
                     if src_main.exists():
-                        dst_main = upload_day_dir / f"{img_prefix}_{row_idx}.png"
+                        dst_main = upload_day_dir / f"{prefix}_{row_idx}.png"
                         shutil.copy2(src_main, dst_main)
                         self._log(f"📦 업로드 폴더로 메인 이미지 복사: {dst_main}")
                     else:
                         self._log(f"⚠️ 메인 이미지 파일을 찾지 못했습니다: {src_main}")
 
                     # 4-2) 스펙 이미지 (row_idx_spec.png)
-                    src_spec = image_day_dir / f"{img_prefix}_{row_idx}_spec.png"
+                    src_spec = image_day_dir / f"{prefix}_{row_idx}_spec.png"
                     if src_spec.exists():
-                        dst_spec = upload_day_dir / f"{img_prefix}_{row_idx}_spec.png"
+                        dst_spec = upload_day_dir / f"{prefix}_{row_idx}_spec.png"
                         shutil.copy2(src_spec, dst_spec)
                         self._log(f"📦 업로드 폴더로 스펙 이미지 복사: {dst_spec}")
                     else:
@@ -2710,7 +2682,7 @@ class ChromeCrawler(QWidget):
         except Exception as e:
             self._log(f"❌ 구글 밑줄 처리 중 오류: {e}")
             
-    def _capture_costco_spec(self, row_idx: int, date_str: str | None = None):
+    def _capture_costco_spec(self, row_idx: int, prefix: str, date_str: str | None = None):
         """
         코스트코 상품 페이지의 '스펙' 패널을 열고
         패널 전체를 캡처한다.
@@ -2737,7 +2709,7 @@ class ChromeCrawler(QWidget):
             self._log(f"📂 코스트코 스펙 이미지 저장 폴더: {save_dir}")
 
             # 2) 저장 경로: {row_idx}_spec.png
-            img_prefix = self._make_image_prefix()  # 🔹 추가
+            img_prefix = prefix  # ✅ 템플릿 prefix 사용(예: 14-10)
             save_path = save_dir / f"{img_prefix}_{row_idx}_spec.png"
 
             # 3) 캡처 대상: 패널 전체(mat-expansion-panel#product_specs)

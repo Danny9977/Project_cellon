@@ -41,7 +41,7 @@ https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/cellon/rules
 
 
 https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/cellon/__init__.py
-https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/cellon/main_window.py
+https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/cellon/sellertool_excel.py
 https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/cellon/config.py
 https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/cellon/main_app.py
 https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/cellon/sheets_client.py
@@ -51,3 +51,4 @@ https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/cellon/ui_ma
 https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/bria_rmbg_folder.py
 https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/image_process.py
 https://raw.githubusercontent.com/Danny9977/Project_cellon/main/make_kitchen_rules_once.py
+https://raw.githubusercontent.com/Danny9977/Project_cellon/main/src/coupang_upload_template_resolver.py

@@ -10,6 +10,7 @@ from cellon.config import COUPANG_UPLOAD_FORM_DIR, COUPANG_UPLOAD_INDEX_JSON
 
 from pathlib import Path
 import json
+import re
 
 from cellon.config import COUPANG_UPLOAD_FORM_DIR, COUPANG_UPLOAD_INDEX_JSON
 
@@ -31,8 +32,13 @@ def build_coupang_upload_index() -> Path:
     key_to_paths: dict[str, list[str]] = {}
 
     for path in root.rglob("sellertool_upload_*.xlsm"):
-        key = path.stem.replace("sellertool_upload_", "")
-        rel_path = str(path.relative_to(root))
+        stem = path.stem.replace("sellertool_upload_", "", 1)
+
+        # ✅ key에서는 '14-10_' 같은 고유 접두어 제거
+        stem = re.sub(r"^\d{1,3}-\d{1,3}_", "", stem)
+
+        key = stem  # -> "주방용품>취사도구"
+        rel_path = str(path.relative_to(root))  # -> 실제 파일명 포함(접두어 포함) 유지
 
         templates.append({
             "key": key,
