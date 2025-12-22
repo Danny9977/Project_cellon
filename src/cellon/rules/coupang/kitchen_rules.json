@@ -6,5 +6,43 @@
   "meta_kitchen_pan": {
     "coupang_category_ids": [],
     "priority": 100
-  }
+  },
+  "__strong_name_rules__": [
+    {
+      "keywords": [
+        "플랫팬",
+        "프라이팬"
+      ],
+      "target_category_id": "80297",
+      "reason": "사용자 수동 선택 기반 강제 룰 (source=홈/키친 / 조리용품 / 쿡웨어, name=에델코첸 통 5중 스테인리스 엠보 프라이팬 28cm)"
+    },
+    {
+      "keywords": [
+        "파스타팟"
+      ],
+      "target_category_id": "80295",
+      "reason": "사용자 수동 선택 기반 강제 룰 (source=홈/키친 / 조리용품 / 쿡웨어, name=쿡에버 멀티 파스타팟 16cm (채망 포함))"
+    },
+    {
+      "keywords": [
+        "미니웍"
+      ],
+      "target_category_id": "80298",
+      "reason": "사용자 수동 선택 기반 강제 룰 (source=선물세트 / 선물세트 / 비식품 선물세트, name=마리슈타이거 미니웍 20cm (유리뚜껑))"
+    },
+    {
+      "keywords": [
+        "계란찜기"
+      ],
+      "target_category_id": "80589",
+      "reason": "사용자 수동 선택 기반 강제 룰 (source=홈/키친 / 조리용품 / 쿡웨어, name=쓰임 마일드 화이트 계란찜기 2P)"
+    },
+    {
+      "keywords": [
+        "뚝배기"
+      ],
+      "target_category_id": "80292",
+      "reason": "사용자 수동 선택 기반 강제 룰 (source=홈/키친 / 조리용품 / 쿡웨어, name=쿡에버 통 5중 스테인레스 뚝배기 세트 4P)"
+    }
+  ]
 }

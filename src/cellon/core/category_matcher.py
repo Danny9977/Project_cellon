@@ -8,6 +8,9 @@ import pandas as pd
 import difflib
 import re
 
+import time
+import traceback
+
 from cellon.category_ai.category_loader import load_category_master
 from cellon.core.rules_loader import (
     load_meta_rules,
@@ -35,7 +38,7 @@ class CategoryMatcher:
         group: str = "kitchen",
         logger: Optional[Callable[[str], None]] = None,
         manual_resolver: Optional[
-            Callable[[str, str, pd.DataFrame], Optional[Dict[str, Any]]]
+            Callable[[str, str, pd.DataFrame, pd.DataFrame], Optional[Dict[str, Any]]]
         ] = None,
     ) -> None:
         """
@@ -78,6 +81,50 @@ class CategoryMatcher:
         except Exception:
             # logger 쪽 문제로 매칭이 죽지 않도록 방어
             pass
+
+    def _build_manual_candidates_df(
+        self,
+        *,
+        meta_key: Optional[str],
+        candidates_df: Optional[pd.DataFrame],
+        source_category_path: str,
+        product_name: str,
+    ) -> pd.DataFrame:
+        """
+        수동 선택 UI에 넘길 후보 DF를 구성한다.
+        - meta_key가 있으면: 기존 candidates_df(좁은 후보)를 유지하는 것이 기본
+        - meta_key가 None이면: strong 후보만 던져서 1개로 보이는 문제를 막기 위해 fallback 후보(넓은 후보)를 사용
+        단, strong 후보는 상단에 오도록 정렬만 한다.
+        """
+        # 1) meta_key가 없으면 넓게 보여준다(핵심)
+        if meta_key is None:
+            base_df = self._fallback_candidates_for_manual(meta_key=None)
+        else:
+            # meta_key가 있으면 기존 흐름 유지
+            base_df = candidates_df if (candidates_df is not None and not candidates_df.empty) \
+                else self._fallback_candidates_for_manual(meta_key=meta_key)
+        
+        if base_df is None or base_df.empty:
+            # 최악의 경우라도 빈 DF 방지
+            return self.cat_master.head(200).copy()
+
+        # 2) strong 룰 타겟이 있으면 '상단 정렬'만 한다 (후보를 strong만으로 축소하지 않음)
+        try:
+            strong_rules = self.coupang_rules.get("__strong_name_rules__", []) or []
+            strong_ids = {
+                str(rule.get("target_category_id"))
+                for rule in strong_rules
+                if rule.get("target_category_id")
+            }
+            if strong_ids:
+                tmp = base_df.copy()
+                tmp["__is_strong__"] = tmp["category_id"].astype(str).isin(strong_ids).astype(int)
+                tmp = tmp.sort_values(["__is_strong__"], ascending=False).drop(columns=["__is_strong__"])
+                return tmp
+        except Exception:
+            pass
+
+        return base_df
 
     # ------------------------------------------------------------------
     # 헬퍼: 사용 가능한 group 목록 확인
@@ -267,10 +314,19 @@ class CategoryMatcher:
                 and not strong_candidates_df.empty
             ):
                 self._log("  ▶ strong 후보들에 대해 수동 카테고리 선택 요청 (meta_key=None)")
+                
+                manual_candidates_df = self._build_manual_candidates_df(
+                    meta_key=meta_key,
+                    candidates_df=strong_candidates_df,
+                    source_category_path=source_category_path,
+                    product_name=product_name,
+                )
+                
                 manual = self._manual_resolver(
                     product_name,
                     source_category_path,
-                    strong_candidates_df,
+                    strong_candidates_df, 
+                    manual_candidates_df
                 )
                 
                 #-- 특별 처리: 사용자가 '선택하지 않기(pass_through)' 선택한 경우 --
@@ -282,7 +338,7 @@ class CategoryMatcher:
                         "reason": "사용자가 카테고리 선택을 건너뜀(pass_through)",
                         "used_llm": False,
                         "meta_key": None,
-                        "num_candidates": len(strong_candidates_df),
+                        "num_candidates": len(manual_candidates_df),
                         "skipped": True,
                     }
                 
@@ -307,10 +363,18 @@ class CategoryMatcher:
                     self._log(
                         f"  ▶ meta_key 없음 → fallback 후보 {len(fallback_df)}개에 대해 수동 선택 요청"
                     )
+                    manual_candidates_df = self._build_manual_candidates_df(
+                        meta_key=meta_key,
+                        candidates_df=fallback_df,
+                        source_category_path=source_category_path,
+                        product_name=product_name,
+                    )
+                    
                     manual = self._manual_resolver(
                         product_name,
                         source_category_path,
-                        fallback_df,
+                        fallback_df, 
+                        manual_candidates_df
                     )
                     
                     #-- 특별 처리: 사용자가 '선택하지 않기(pass_through)' 선택한 경우 --
@@ -322,7 +386,7 @@ class CategoryMatcher:
                             "reason": "사용자가 카테고리 선택을 건너뜀(pass_through)",
                             "used_llm": False,
                             "meta_key": None,
-                            "num_candidates": len(strong_candidates_df),
+                            "num_candidates": len(fallback_df),
                             "skipped": True,
                         }
                     
@@ -423,10 +487,18 @@ class CategoryMatcher:
                     f"수동 선택 후보 {len(candidates_df)}개"
                 )
 
+                manual_candidates_df = self._build_manual_candidates_df(
+                    meta_key=meta_key,
+                    candidates_df=candidates_df,   # 그 분기에서 원래 쓰던 DF
+                    source_category_path=source_category_path,
+                    product_name=product_name,
+                )
+                
                 manual = self._manual_resolver(
                     product_name,
                     source_category_path,
-                    candidates_df,
+                    candidates_df, 
+                    manual_candidates_df
                 )
 
                 #-- 특별 처리: 사용자가 '선택하지 않기(pass_through)' 선택한 경우 --
@@ -437,8 +509,8 @@ class CategoryMatcher:
                         "category_path": None,
                         "reason": "사용자가 카테고리 선택을 건너뜀(pass_through)",
                         "used_llm": False,
-                        "meta_key": None,
-                        "num_candidates": len(strong_candidates_df),
+                        "meta_key": meta_key,
+                        "num_candidates": len(candidates_df),
                         "skipped": True,
                     }
                 
@@ -533,10 +605,19 @@ class CategoryMatcher:
         # 3차: 후보가 2개 이상 → 먼저 사람에게 물어보기
         if self._manual_resolver is not None and not candidates_df.empty:
             self._log("  ▶ 수동 카테고리 선택 콜백 호출 (LLM 이전 단계)")
+            
+            manual_candidates_df = self._build_manual_candidates_df(
+                meta_key=meta_key,
+                candidates_df=candidates_df,   # 그 분기에서 원래 쓰던 DF
+                source_category_path=source_category_path,
+                product_name=product_name,
+            )
+            
             manual = self._manual_resolver(
                 product_name,
                 source_category_path,
                 candidates_df,
+                manual_candidates_df
             )
             
             #-- 특별 처리: 사용자가 '선택하지 않기(pass_through)' 선택한 경우 --
@@ -547,8 +628,8 @@ class CategoryMatcher:
                     "category_path": None,
                     "reason": "사용자가 카테고리 선택을 건너뜀(pass_through)",
                     "used_llm": False,
-                    "meta_key": None,
-                    "num_candidates": len(strong_candidates_df),
+                    "meta_key": meta_key,
+                    "num_candidates": len(candidates_df),
                     "skipped": True,
                 }
                 
@@ -788,3 +869,6 @@ class CategoryMatcher:
                 )
 
         return None
+
+
+    

@@ -575,7 +575,7 @@ class ChromeCrawler(QWidget):
             logger=self._log,
             manual_resolver=self._resolve_category_manually,
         )
-        
+
         # 등록상품명 캐시 (sellerProductId -> 등록상품명)
         self._cp_seller_name_cache: dict[str, str] = {}
 
@@ -1758,6 +1758,19 @@ class ChromeCrawler(QWidget):
                     self._log(f"🌐 브라우저에서 이미지 직접 저장 시도")
                     self._save_image_from_browser(driver, el, final_path)
                     self._log(f"📥 브라우저 저장 성공 → {final_path.name}")
+                    # 1) 일단 raw로 저장
+                    temp_path = save_dir / f"{row_idx}_raw_capture_0.png"
+                    self._save_image_from_browser(driver, el, temp_path)
+            
+                    # 2) 1000x1000 후처리해서 final_path로 저장
+                    self._process_and_save_image_1000x1000(temp_path, final_path)
+            
+                    try:
+                        temp_path.unlink()
+                    except Exception:
+                        pass
+            
+                    self._log(f"📥 브라우저 저장 성공(+1000x1000) → {final_path.name}")
                     saved_count += 1
                     downloaded = True
                 except Exception as e:
@@ -1811,7 +1824,17 @@ class ChromeCrawler(QWidget):
                 or self._sellertool_work_xlsm_date != date_str
             )
 
-            
+            # ✅ SSOT: "엑셀에 실제로 기록된 행"이 row_idx 이다.
+            #    새 파일/재사용 모두에서 row_idx는 반드시 확보되어야 한다.
+            row_idx: int | None = None
+
+            # 이번에 기록할 상품(엑셀/이미지/스펙 모두 이 상품 기준으로 동일 row_idx를 써야 함)
+            product = Product(
+                source_domain=SourceDomain.COSTCO,
+                raw_name=self.crawled_title or "",
+                source_url=self.crawled_url or None,
+            )
+ 
             
             if need_new:
                 try:
@@ -1820,13 +1843,8 @@ class ChromeCrawler(QWidget):
                 except Exception as e:
                     self._log(f"❌ 템플릿 확정 실패: {e}")
                     return
-                product = Product(
-                    source_domain=SourceDomain.COSTCO,
-                    raw_name=self.crawled_title or "",
-                    source_url=self.crawled_url or None,
-                )
-                       
-                work_xlsm_path = prepare_and_fill_sellertool(
+                
+                work_xlsm_path, row_idx = prepare_and_fill_sellertool(
                     product=product,
                     coupang_category_id=self.coupang_category_id,      # ✅ 꼭 필요
                     coupang_category_path=self.coupang_category_path,  # ✅ 꼭 필요
@@ -1835,7 +1853,7 @@ class ChromeCrawler(QWidget):
                 )
                 
                 if work_xlsm_path:
-                    self._sellertool_work_xlsm_path = work_xlsm_path
+                    self._sellertool_work_xlsm_path = Path(work_xlsm_path)
                     self._sellertool_work_xlsm_date = date_str
                     self._log(f"✅ 셀러툴 작업 파일 반영 완료: {work_xlsm_path}")
                 else:
@@ -1843,7 +1861,24 @@ class ChromeCrawler(QWidget):
                     return
             else:
                 work_xlsm_path = Path(self._sellertool_work_xlsm_path)
-                self._log(f"📄 셀러툴 작업용 엑셀 재사용: {work_xlsm_path}")
+                self._log(f"📄 셀러툴 작업용 엑셀 재사용(이전 경로): {work_xlsm_path}")
+
+                # ✅ 재사용이라도: 이번 상품을 "같은 엑셀 파일"에 추가 기록하고 row_idx를 받아야
+                #    이미지/스펙/파일명이 엑셀 행과 100% 동기화된다.
+                new_work_xlsm_path, row_idx = prepare_and_fill_sellertool(
+                    product=product,
+                    coupang_category_id=self.coupang_category_id,
+                    coupang_category_path=self.coupang_category_path,
+                    price=self.crawled_price,
+                    search_keywords=None,
+                )
+                
+                # ✅ 핵심: 실제로 기록된 파일(dest_path) 기준으로 이후 prefix/캡처도 동기화
+                if new_work_xlsm_path:
+                    work_xlsm_path = Path(new_work_xlsm_path)
+                    self._sellertool_work_xlsm_path = work_xlsm_path
+                    self._sellertool_work_xlsm_date = date_str
+                    self._log(f"✅ 셀러툴 작업 파일 동기화: {work_xlsm_path}")
 
             # ==== prefix 추출 (이미지명 전용) ====
             prefix = extract_template_prefix_from_filename(Path(work_xlsm_path))
@@ -1853,14 +1888,9 @@ class ChromeCrawler(QWidget):
                 prefix = "no-prefix"
 
             # ==== 엑셀 기록 ====
-            row_idx = None
-            try:
-                row_idx = self._write_costco_to_seller_excel(work_xlsm_path, prefix=prefix)
-            except Exception as e:
-                self._log(f"[오류] 코스트코 엑셀 기록 실패: {e}")
-
-            if row_idx:
-                from datetime import datetime
+            # ✅ row_idx는 prepare_and_fill_sellertool()이 반환한 "실제 기록 행"만 사용한다.
+            if row_idx is not None:
+                self._log(f"📝 코스트코 엑셀 기록: 행 {row_idx}에 데이터 작성 시도")
                 date_str = datetime.now().strftime("%Y%m%d")
 
                 image_day_dir = CRAWLING_TEMP_IMAGE_DIR / date_str
@@ -3047,6 +3077,7 @@ class ChromeCrawler(QWidget):
         product_name: str,
         source_category_path: str,
         candidates_df: pd.DataFrame,
+        manual_candidates_df: Optional[pd.DataFrame] = None,
     ) -> Optional[dict]:
         """
         CategoryMatcher에서 호출하는 콜백.
@@ -3055,7 +3086,16 @@ class ChromeCrawler(QWidget):
         - 'LLM에게 맡기기'를 누르면 None 리턴
         + 사용자가 선택한 카테고리를 기준으로 strong_name_rules 를 실제 JSON에 저장
         """
-        if candidates_df is None or candidates_df.empty:
+        
+        # UI에 보여줄 후보 DF는 manual_candidates_df(확장/정렬된 후보)가 있으면 그걸 우선 사용
+        view_df = (
+            manual_candidates_df
+            if (manual_candidates_df is not None and not manual_candidates_df.empty)
+            else candidates_df
+        )
+        
+        # 이제 view_df 기준으로 empty 체크
+        if view_df is None or view_df.empty:
             return None
 
         # 1차: 카테고리 선택 다이얼로그
@@ -3100,7 +3140,7 @@ class ChromeCrawler(QWidget):
         #    - 아이템은 lst에 한 번만 addItem() 해두고,
         #    - 검색은 clear()가 아니라 setHidden()으로 처리합니다.
 
-        for _, row in candidates_df.iterrows():
+        for _, row in view_df.iterrows():
             cid = str(row["category_id"])
             path = str(row["category_path"])
             text = f"[{cid}] {path}"
@@ -3253,7 +3293,7 @@ class ChromeCrawler(QWidget):
         #     1) "throgh"인 경우: LLM로도 안 보내고 그냥 스킵
         if result["mode"] == "pass_through":
             self._log("⏭️ 카테고리 선택 안 함(패스) → LLM 실행 없이 건너뜁니다.")
-            return {"mode": "pass_through"} # <-- CategoryMatcher에서 처리 가능하도록 dict 반환 (아무것도 안하고 넘어감)
+            return {"mode": "pass_through", "skipped": True} # <-- CategoryMatcher에서 처리 가능하도록 dict 반환 (아무것도 안하고 넘어감)
     
         #     2) manual 아니면: LLM로 넘김
         if result["mode"] != "manual" or not result["data"]:

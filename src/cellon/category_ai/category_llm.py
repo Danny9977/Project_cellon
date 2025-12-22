@@ -61,14 +61,44 @@ def call_ollama_chat(system_prompt: str, user_prompt: str,
         ],
         "stream": False,
     }
-
+    # --- 추가: llm 호출 전 진단 로그 ---
     try:
-        resp = requests.post(url, json=payload, timeout=timeout)
-        resp.raise_for_status()
-    except requests.exceptions.Timeout as e:
-        raise LLMError(f"LLM 호출 타임아웃 (timeout={timeout}s)") from e
-    except requests.RequestException as e:
-        raise LLMError(f"LLM HTTP 호출 실패: {e}") from e
+        sys_len = len(system_prompt or "")
+        user_len = len(user_prompt or "")
+        print(f"[LLM][req] url={url} model={OLLAMA_MODEL} timeout={timeout}")
+        print(f"[LLM][req] prompt_len system={sys_len} user={user_len}")
+    except Exception:
+        pass
+    
+    # -------------------------
+    # requests timeout은 (connect_timeout, read_timeout) 튜플을 쓰는 게 더 안전합니다.
+    # - connect_timeout: 서버 접속 자체가 안 될 때 오래 멈추는 것 방지
+    # - read_timeout: 응답이 늦어지는 경우 무한 대기 방지
+    connect_timeout = min(10.0, float(timeout))        # 접속은 빠르게 실패시키기
+    read_timeout = max(10.0, float(timeout))           # 전체 체감 타임아웃(기본 60s)
+    req_timeout = (connect_timeout, read_timeout)
+
+    last_err: Optional[Exception] = None
+    max_attempts = 2  # 1회 재시도 (최소 침습)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = requests.post(url, json=payload, timeout=req_timeout)
+            resp.raise_for_status()
+            break
+        except requests.exceptions.Timeout as e:
+            last_err = e
+            if attempt >= max_attempts:
+                raise LLMError(
+                    f"LLM 호출 타임아웃 (connect={connect_timeout}s, read={read_timeout}s)"
+                ) from e
+            # 짧은 백오프 후 재시도
+            time.sleep(0.6)
+        except requests.RequestException as e:
+            last_err = e
+           # 네트워크/HTTP 계열은 1회 재시도 후 실패 처리
+            if attempt >= max_attempts:
+               raise LLMError(f"LLM HTTP 호출 실패: {e}") from e
+            time.sleep(0.6)
 
     try:
         data = resp.json()

@@ -29,6 +29,9 @@ from typing import Dict, Tuple
 from copy import copy
 from openpyxl.worksheet.worksheet import Worksheet
 
+import zipfile
+from typing import Iterable
+
 # ===============================
 # 템플릿 파일명 접두어(prefix) 추출 + 이미지명 생성
 # ===============================
@@ -151,14 +154,49 @@ def find_separator_row(ws, keyword="여기서부터", max_scan: int = 5000) -> i
 
 def find_template_source_row(
     ws,
+    *,
+    coupang_category_id: str | None = None,
+    coupang_category_path: str | None = None,
     ck_candidates=("기타 재화", "기타재화"),
+    template_source_max_row: int | None = None,
     max_scan: int = 200,
-):
-    for r in range(1, max_scan + 1):
-        v = ws["CK" + str(r)].value
-        if isinstance(v, str) and v.strip() in ck_candidates:
+) -> int:
+    """
+    Template source 행 선택 정책(최소 침습):
+    1) (가능하면) A열의 "[{category_id}]" 로 먼저 좁히고
+    2) 그 중 CK 가 '기타 재화'인 행을 선택
+    3) 그래도 없으면 기존처럼 CK 기준으로 fallback
+    """
+    upper = template_source_max_row if template_source_max_row is not None else max_scan
+    upper = min(upper, max_scan)
+
+    # 1) category_id 우선 매칭
+    if coupang_category_id:
+        token = f"[{coupang_category_id}]"
+        for r in range(1, upper + 1):
+            a_val = ws[f"A{r}"].value
+            if not (isinstance(a_val, str) and token in a_val):
+                continue
+            ck_val = ws[f"CK{r}"].value
+            if isinstance(ck_val, str) and ck_val.strip() in ck_candidates:
+                return r
+    # 2) (옵션) category_path 텍스트 우선 매칭 (id가 비어있거나, 템플릿 A열 포맷이 다른 경우 대비)
+    if coupang_category_path:
+        for r in range(1, upper + 1):
+            a_val = ws[f"A{r}"].value
+            if not (isinstance(a_val, str) and coupang_category_path in a_val):
+                continue
+            ck_val = ws[f"CK{r}"].value
+            if isinstance(ck_val, str) and ck_val.strip() in ck_candidates:
+                return r
+
+    # 3) fallback: CK 기준(기존 동작)
+    for r in range(1, upper + 1):
+        ck_val = ws["CK" + str(r)].value
+        if isinstance(ck_val, str) and ck_val.strip() in ck_candidates:
             return r
-    raise RuntimeError("CK 기준 Template source 행을 찾지 못했습니다.")
+
+    raise RuntimeError("Template source 행을 찾지 못했습니다. (category_id/path, CK 모두 실패)")
 
 
 # ===============================
@@ -223,6 +261,13 @@ def _normalize_category_text(text: str) -> str:
 # ========================
 # 가격 계산 정책
 # ========================
+
+# 10의 자리 절삭 (백원 단위로 내림)
+def _floor_to_100(x: int) -> int:
+    # 1의 자리 절삭 (백원 단위로 내림)
+    return (x // 100) * 100
+
+
 def calculate_pricing_from_base(base_price: int) -> tuple[int, int, int, int]:
     """
     ui_main.py 에 있던 기존 가격 정책을 그대로 사용
@@ -234,19 +279,26 @@ def calculate_pricing_from_base(base_price: int) -> tuple[int, int, int, int]:
         return 0, 0, 0, 0
 
     # BJ: 판매가
-    if base_price <= 30000:
+    if base_price <= 10000:
+        bj_price = int(round(base_price * 1.8))
+    elif base_price <= 30000:
         bj_price = int(round(base_price * 1.3))
     elif base_price <= 50000:
         bj_price = int(round(base_price * 1.2))
     else:
         bj_price = int(round(base_price * 1.15))
 
+    # 10의 자리 절삭
+    bj_price = _floor_to_100(bj_price)
+    
     # BL: 할인 기준가 (기존 로직: BJ * 1.05)
     bl_price = int(round(bj_price * 1.05)) if bj_price > 0 else 0
+    # 10의 자리 절삭
+    bl_price = _floor_to_100(bl_price)
 
     # BM / BN: 기존 고정 정책
     stock_qty = 999
-    lead_time = 2
+    lead_time = 2 # costco 기준. 2~3일 소요
 
     return bj_price, bl_price, stock_qty, lead_time
 
@@ -514,7 +566,7 @@ def _get_target_insertion_row(ws: Worksheet) -> int:
         return divider_row + 1
 
 
-
+#삭제필요
 def _pick_template_row(
     ws: Worksheet,
     category_id: str,
@@ -686,29 +738,44 @@ def _fill_product_data(
 
 def _get_cached_workbook(xlsm_path: Path) -> Workbook:
     """
-    같은 xlsm을 반복해서 열지 않기 위한 간단 캐시.
-    - 파일 mtime이 바뀌면(외부 수정/복사 등) 캐시 무효화 후 재로딩
+    ✅ 안정성 우선 정책:
+    - 크롤링 1건(또는 저장 1회)마다 workbook을 새로 열고, 저장 후 닫는다.
+    - openpyxl workbook 객체 재사용(캐시)은 xlsm zip 깨짐/닫힌 핸들 이슈를 유발할 수 있어
+      당분간 비활성화한다.
     """
-    key = str(xlsm_path)
-    mtime = xlsm_path.stat().st_mtime
+    return load_workbook(xlsm_path, keep_vba=True)
 
-    cached = _WB_CACHE.get(key)
-    if cached:
-        wb, cached_mtime = cached
-        if cached_mtime == mtime:
-            return wb
 
-    wb = load_workbook(xlsm_path, keep_vba=True)
-    _WB_CACHE[key] = (wb, mtime)
-    return wb
-
+def _validate_xlsm_zip(xlsm_path: Path) -> None:
+    """
+    저장 직후 xlsm(zip) 기본 구조가 유지되는지 빠르게 검증.
+    - "[Content_Types].xml" 누락이면 xlsx/xlsm로서 성립 불가 → 바로 감지
+    """
+    with zipfile.ZipFile(xlsm_path, "r") as zf:
+        names = set(zf.namelist())
+        required = {"[Content_Types].xml", "_rels/.rels"}
+        missing = [n for n in required if n not in names]
+        if missing:
+            raise RuntimeError(
+                f"엑셀 파일이 손상되었습니다. 필수 엔트리 누락: {missing} (file={xlsm_path})"
+            )
 
 def _save_cached_workbook(xlsm_path: Path, wb: Workbook) -> None:
     """
-    저장 후 mtime 갱신(캐시 유지)
+    ✅ 안정성 우선 정책:
+    - save → 유효성 검사 → close
+    - 캐시 유지하지 않음(다음 크롤링에서 다시 open)
     """
-    wb.save(xlsm_path)
-    _WB_CACHE[str(xlsm_path)] = (wb, xlsm_path.stat().st_mtime)
+    try:
+        wb.save(xlsm_path)
+        _validate_xlsm_zip(xlsm_path)
+    finally:
+        # openpyxl workbook 재사용을 막기 위해 항상 close
+        try:
+            wb.close()
+        except Exception:
+            pass
+        _WB_CACHE.pop(str(xlsm_path), None)
 
 
 def prepare_sellertool_workbook_copy(
@@ -750,6 +817,8 @@ def write_coupang_row(
     lead_time: int,               # BN
     main_image_name: str,         # CZ
     spec_image_name: str,         # DF
+    coupang_category_id: str | None = None,
+    coupang_category_path: str | None = None,
 ):
     """
     - Template source 영역에는 절대 write 하지 않는다
@@ -761,7 +830,12 @@ def write_coupang_row(
     template_source_max_row = sep_row - 1
 
     # 2. Template source 행 (CK 기준)
-    src_row = find_template_source_row(ws)
+    src_row = find_template_source_row(
+        ws,
+        coupang_category_id=coupang_category_id,
+        coupang_category_path=coupang_category_path,
+        template_source_max_row=template_source_max_row,
+    )
 
     # 3. 입력 대상 행
     dst_row = find_next_input_row(ws, sep_row + 1)
@@ -846,7 +920,8 @@ def prepare_and_fill_sellertool(
     coupang_category_path: str,
     price: Optional[int] = None,
     search_keywords: Optional[Iterable[str]] = None,
-) -> Path:
+) -> tuple[Path, int]:
+
     """
     1) coupang_upload_form 폴더에서 카테고리에 맞는 템플릿 엑셀을 찾고
     2) upload_ready 폴더로 '원래 파일명 그대로' 복사 (이미 있으면 재사용)
@@ -854,7 +929,8 @@ def prepare_and_fill_sellertool(
        첫 빈 행으로 복사하고
     4) 그 행에 product/price/search_keywords 를 채워 넣는다.
 
-    최종적으로 수정된 upload_ready 안의 파일 Path 를 반환.
+    최종적으로 수정된 upload_ready 안의 파일 Path 와,
+    실제로 데이터가 기록된 행 번호(dst_row)를 함께 반환.
     """
     #for test
     
@@ -893,49 +969,62 @@ def prepare_and_fill_sellertool(
 
     # ---- 3) 엑셀 열기 ----
     wb = _get_cached_workbook(dest_path)
+    try:
+        if SELLERTOOL_SHEET_NAME not in wb.sheetnames:
+            raise RuntimeError(
+                f"시트 '{SELLERTOOL_SHEET_NAME}' 를 찾지 못했습니다. "
+             f"파일: {dest_path}"
+            )
 
-    if SELLERTOOL_SHEET_NAME not in wb.sheetnames:
-        raise RuntimeError(
-            f"시트 '{SELLERTOOL_SHEET_NAME}' 를 찾지 못했습니다. "
-            f"파일: {dest_path}"
+        ws = wb[SELLERTOOL_SHEET_NAME]
+
+        # ---- 4) 가격 정책 계산 (기존 ui_main.py 로직 재사용) ----
+        base_price = int(price) if price is not None else 0
+
+        bj_price, bl_price, stock_qty, lead_time = calculate_pricing_from_base(base_price)
+
+        # ---- 5) 데이터 행 추가 (Template source 보호 로직 사용) ----
+        dst_row = write_coupang_row(
+            ws=ws,
+            product_name=product.display_name,
+            calculated_price=bj_price,        # BJ
+            discount_base_price=bl_price,     # BL
+            stock_qty=stock_qty,              # BM
+            lead_time=lead_time,              # BN
+            main_image_name="",               # 일단 빈 값(아래에서 채움)
+            spec_image_name="",
+            coupang_category_id=coupang_category_id,
+            coupang_category_path=coupang_category_path,
         )
+        # ✅ prefix 기반 이미지명 확정 → CZ/DF에 실제로 기록
+        prefix = extract_template_prefix_from_filename(dest_path) or "no-prefix"
+        main_img, spec_img = build_prefixed_image_names(prefix, dst_row)
 
-    ws = wb[SELLERTOOL_SHEET_NAME]
-
-    # ---- 4) 가격 정책 계산 (기존 ui_main.py 로직 재사용) ----
-    base_price = int(price) if price is not None else 0
-
-    bj_price, bl_price, stock_qty, lead_time = calculate_pricing_from_base(base_price)
-
-    # ---- 5) 데이터 행 추가 (Template source 보호 로직 사용) ----
-    dst_row = write_coupang_row(
-        ws=ws,
-        product_name=product.display_name,
-        calculated_price=bj_price,        # BJ
-        discount_base_price=bl_price,     # BL
-        stock_qty=stock_qty,              # BM
-        lead_time=lead_time,              # BN
-        main_image_name="",               # 일단 빈 값(아래에서 채움)
-        spec_image_name="",
-    )
-    # ✅ prefix 기반 이미지명 확정 → CZ/DF에 실제로 기록
-    prefix = extract_template_prefix_from_filename(dest_path) or "no-prefix"
-    main_img, spec_img = build_prefixed_image_names(prefix, dst_row)
-
-    template_source_row = find_template_source_row(ws)
-    template_source_max_row = find_template_source_row(ws)
-    safe_set_cell(ws, dst_row, "CZ", main_img, template_source_max_row)
-    safe_set_cell(ws, dst_row, "DF", spec_img, template_source_max_row)
+        template_source_row = find_template_source_row(ws)
+        template_source_max_row = find_template_source_row(ws)
+        sep_row = find_separator_row(ws)
+        template_source_max_row = sep_row - 1
+        # template source 보호를 위해 구분선 기반으로 상한만 계산
+        sep_row = find_separator_row(ws)
+        template_source_max_row = sep_row - 1
+        safe_set_cell(ws, dst_row, "CZ", main_img, template_source_max_row)
+        safe_set_cell(ws, dst_row, "DF", spec_img, template_source_max_row)
 
     # ---- 7) 저장 ----
-    _save_cached_workbook(dest_path, wb)
-    
+        _save_cached_workbook(dest_path, wb)
+    finally:
+        # _save_cached_workbook에서 close를 하더라도,
+        # 중간 예외로 save까지 못 가는 경우를 대비한 2중 안전장치
+        try:
+            wb.close()
+        except Exception:
+            pass    
     
     print("[DEBUG] template_path =", template_path)
     print("[DEBUG] template_path.name =", template_path.name)
     print("[DEBUG] dest_path =", dest_path)
     print("[DEBUG] dest exists? =", dest_path.exists())
 
-    return dest_path
+    return dest_path, dst_row
 
 
