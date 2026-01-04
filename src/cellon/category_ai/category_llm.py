@@ -1,12 +1,13 @@
 # cellon/category_ai/category_llm.py
 
-from __future__ import annotations
+from __future__ import annotations  # 타입 힌트를 앞으로 미룹니다.
 
+from dataclasses import dataclass  # 간단한 데이터 구조를 씁니다.
 import json
-import re
+import re   # 토큰화를 위해 정규식을 씁니다.
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple, Set
 
 import requests
 import pandas as pd
@@ -46,7 +47,7 @@ class LLMError(RuntimeError):
 
 
 def call_ollama_chat(system_prompt: str, user_prompt: str,
-                     timeout: float = 300.0) -> str:
+                     timeout: float = 600.0) -> str:
     """
     Ollama /api/chat 호출 래퍼.
     - system_prompt, user_prompt 를 넣고,

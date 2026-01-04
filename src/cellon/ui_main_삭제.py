@@ -569,7 +569,8 @@ class ChromeCrawler(QWidget):
         self.setWindowTitle("크롬 크롤링 도구 (gspread + Coupang OpenAPI)")
         self.setGeometry(0, 0, 460, 580)
 
-        # ✅ 카테고리 매칭은 match_category_auto()가 group을 자동 선택합니다.
+        # ✅ group 자동 라우팅(match_category_auto)로 바꿔서 고정 matcher 제거
+        # self.cat_matcher = ...
 
         # 등록상품명 캐시 (sellerProductId -> 등록상품명)
         self._cp_seller_name_cache: dict[str, str] = {}
@@ -754,43 +755,6 @@ class ChromeCrawler(QWidget):
     def _log(self, msg: str):
         self.log.append(msg)
         print(msg)
-
-    def _log_http_error(self, e: Exception, context: str = ""):
-        """
-        쿠팡 API HTTP 에러 공통 처리.
-        - 특히 403(IP 미허용) 케이스를 사용자에게 명확히 안내
-        """
-        resp = getattr(e, "response", None)
-        status = getattr(resp, "status_code", None)
-
-        body = ""
-        try:
-            body = resp.text if resp is not None else ""
-        except Exception:
-            pass
-
-        # 기본 로그
-        self._log(f"❌ {context} (HTTP {status})")
-
-        # --- 403 전용 안내 ---
-        if status == 403:
-            if "not allowed" in body.lower() or "ip address" in body.lower():
-                self._log(
-                    "🚫 쿠팡 OpenAPI 접근 거부 (403)\n"
-                    "👉 원인: 현재 PC의 공인 IP가 쿠팡 OpenAPI 허용 IP에 등록되어 있지 않습니다.\n"
-                    "👉 해결:\n"
-                    "  1) 쿠팡 Wing > 시스템연동 > OpenAPI 관리\n"
-                    "  2) 해당 키의 '허용 IP'에 현재 공인 IP 추가\n"
-                    "  3) 설정 변경 후 최대 30분 뒤 재시도\n"
-                )
-                return
-
-        # --- 기타 HTTP 에러 ---
-        if body:
-            self._log(f"응답 본문: {body}")
-        else:
-            self._log(f"에러 내용: {repr(e)}")
-
 
     # ... (여기부터는 기존 ChromeCrawler 의 모든 메서드들을
     #      main_app.py 에서 그대로 복사해 오시면 됩니다.
@@ -1301,17 +1265,15 @@ class ChromeCrawler(QWidget):
                 self._log(f"  - 상품명='{self.crawled_title or ''}'")
 
                 if source:
-                    match = match_category_auto(
-                source=source,
-                source_category_path=self.crawled_category or "",
-                product_name=self.crawled_title or "",
-                logger=self._log,
-                manual_resolver=self._resolve_category_manually,
-                brand=None,
-                extra_text=None,
-                max_group_trials=3,
-                manual_cap=800,
-            )
+                    match = self.cat_matcher.match_category(
+                        source=source,
+                        source_category_path=self.crawled_category or "",
+                        product_name=self.crawled_title or "",
+                        brand=None,
+                        extra_text=None,
+                        max_group_trials=3,     # ✅ 상위 N개 group만 시도
+                        manual_cap=800,         # ✅ 팝업 후보 상한 (버벅임 방지)
+                    )
 
                     # ✅ 스킵(선택 안 함) 처리
                     if isinstance(match, dict) and match.get("skipped") is True:
@@ -3360,7 +3322,7 @@ class ChromeCrawler(QWidget):
 
             if selected_kw:
                 # group 은 kitchen/food/beauty 등 → CategoryMatcher 에서 이미 보관 중
-                group = getattr(self, "_active_group", "kitchen")
+                group = getattr(self.cat_matcher, "group", "kitchen")
 
                 reason = f"사용자 수동 선택 기반 강제 룰 (source={source_category_path}, name={product_name})"
 
@@ -3376,6 +3338,9 @@ class ChromeCrawler(QWidget):
                     load_coupang_rules.cache_clear()
                 except Exception:
                     pass
+
+                self.cat_matcher.coupang_rules = load_coupang_rules(group)
+
                 self._log("💾 strong_name_rules JSON 업데이트 완료:")
                 for k in selected_kw:
                     self._log(f'   - "{k}" → category_id={cid}')

@@ -30,7 +30,7 @@ from copy import copy
 from openpyxl.worksheet.worksheet import Worksheet
 
 import zipfile
-from typing import Iterable
+from typing import Iterable, Optional
 
 # ===============================
 # 템플릿 파일명 접두어(prefix) 추출 + 이미지명 생성
@@ -159,45 +159,140 @@ def find_template_source_row(
     coupang_category_path: str | None = None,
     ck_candidates=("기타 재화", "기타재화"),
     template_source_max_row: int | None = None,
-    max_scan: int = 200,
+    max_scan: int = 1000,
 ) -> int:
     """
-    Template source 행 선택 정책(최소 침습):
-    1) (가능하면) A열의 "[{category_id}]" 로 먼저 좁히고
-    2) 그 중 CK 가 '기타 재화'인 행을 선택
-    3) 그래도 없으면 기존처럼 CK 기준으로 fallback
-    """
-    upper = template_source_max_row if template_source_max_row is not None else max_scan
-    upper = min(upper, max_scan)
+    Template source 행 선택 정책(개선):
+    - 스캔 상한(upper)은 'template source 영역'까지만
+      * template_source_max_row가 주어지면 그걸 사용
+      * 없으면 get_template_source_max_row(ws)로 계산(구분자/없음 모두 대응)
 
-    # 1) category_id 우선 매칭
+    선택 우선순위:
+    1) category_id 일치 행들을 모두 모음
+       - 그 중 CK가 '기타 재화/기타재화'면 우선 선택(뒤에서부터 탐색)
+       - 없으면 "마지막 id 행" 선택 (식품에서 농수산물=앞, 기타류=뒤 패턴 대응)
+    2) (옵션) category_path 포함 행들 중 "마지막 매칭 행" 선택
+    3) fallback: CK가 '기타 재화/기타재화'인 행들 중 "마지막" 선택
+    """
+    if template_source_max_row is None:
+        template_source_max_row = get_template_source_max_row(ws)
+
+    # 안전장치: template_source_max_row가 비정상인 경우만 백업 제한
+    upper = template_source_max_row if template_source_max_row and template_source_max_row > 0 else max_scan
+    if template_source_max_row is None:
+        upper = min(upper, max_scan)
+
+    upper = max(1, upper)
+
+    # 1) category_id 우선 (요청 정책 반영)
     if coupang_category_id:
         token = f"[{coupang_category_id}]"
+        id_rows: list[int] = []
         for r in range(1, upper + 1):
             a_val = ws[f"A{r}"].value
-            if not (isinstance(a_val, str) and token in a_val):
-                continue
-            ck_val = ws[f"CK{r}"].value
-            if isinstance(ck_val, str) and ck_val.strip() in ck_candidates:
-                return r
-    # 2) (옵션) category_path 텍스트 우선 매칭 (id가 비어있거나, 템플릿 A열 포맷이 다른 경우 대비)
+            if isinstance(a_val, str) and token in a_val:
+                id_rows.append(r)
+
+        if id_rows:
+            # CK='기타 재화'가 있으면 우선(보통 뒤쪽에 있어서 reversed 탐색)
+            for r in reversed(id_rows):
+                ck_val = ws[f"CK{r}"].value
+                if isinstance(ck_val, str) and ck_val.strip() in ck_candidates:
+                    return r
+
+            # 없으면 "마지막 id 행"
+            return id_rows[-1]
+
+    # 2) category_path (보조): 여러 개면 "마지막 매칭 행"
     if coupang_category_path:
+        path_rows: list[int] = []
         for r in range(1, upper + 1):
             a_val = ws[f"A{r}"].value
-            if not (isinstance(a_val, str) and coupang_category_path in a_val):
-                continue
-            ck_val = ws[f"CK{r}"].value
-            if isinstance(ck_val, str) and ck_val.strip() in ck_candidates:
-                return r
+            if isinstance(a_val, str) and coupang_category_path in a_val:
+                path_rows.append(r)
+        if path_rows:
+            return path_rows[-1]
 
-    # 3) fallback: CK 기준(기존 동작)
+    # 3) fallback: CK 기준으로 마지막 후보
+    ck_rows: list[int] = []
     for r in range(1, upper + 1):
-        ck_val = ws["CK" + str(r)].value
+        ck_val = ws[f"CK{r}"].value
         if isinstance(ck_val, str) and ck_val.strip() in ck_candidates:
+            ck_rows.append(r)
+    if ck_rows:
+        return ck_rows[-1]
+
+    # 진짜 최후: 1행(또는 2행)을 반환하기보다는 upper의 마지막으로(오탐 최소화)
+    return upper
+
+
+
+_ID_TOKEN_RE = re.compile(r"\[(\d+)\]")  # A열의 "[73134]" 같은 토큰 감지
+
+
+def detect_separator_row(ws, keyword: str = "여기서부터", scan_limit: int = 5000) -> Optional[int]:
+    """
+    구분자 행을 '찾기만' 합니다. (삽입 X)
+    - A열에서 keyword 포함 문구를 찾으면 그 행 번호 반환
+    - 없으면 None
+    """
+    upper = min(getattr(ws, "max_row", scan_limit), scan_limit)
+    for r in range(1, upper + 1):
+        v = ws[f"A{r}"].value
+        if isinstance(v, str) and keyword in v:
             return r
+    return None
 
-    raise RuntimeError("Template source 행을 찾지 못했습니다. (category_id/path, CK 모두 실패)")
 
+def infer_template_source_max_row(ws, scan_limit: int = 50000, blank_run_stop: int = 200) -> int:
+    """
+    구분자가 없는 '템플릿 소스만 있는 파일'에서,
+    템플릿 소스 영역의 마지막 행을 추정합니다.
+
+    전략:
+    - A열에서 "[숫자]" 토큰이 등장하는 행들을 찾고, 마지막 발견 행을 max_row로 사용
+    - 템플릿이 시작된 이후 A열이 연속으로 blank_run_stop만큼 비면 종료(시트 끝까지 스캔 방지)
+    """
+    max_row = getattr(ws, "max_row", 0) or 0
+    upper = min(max_row if max_row > 0 else scan_limit, scan_limit)
+
+    last_id_row = 0
+    seen_any = False
+    blank_run = 0
+
+    for r in range(1, upper + 1):
+        v = ws[f"A{r}"].value
+        s = v.strip() if isinstance(v, str) else ""
+
+        if _ID_TOKEN_RE.search(s):
+            last_id_row = r
+            seen_any = True
+            blank_run = 0
+            continue
+
+        # 템플릿 시작 이후 공백이 오래 지속되면 종료
+        if seen_any and (s == ""):
+            blank_run += 1
+            if blank_run >= blank_run_stop:
+                break
+        elif seen_any:
+            # ID 토큰은 없지만 뭔가 적혀있으면(설명행 등) blank_run 리셋
+            blank_run = 0
+
+    # 마지막 id 행이 없으면(정말 비정상 템플릿) 안전하게 1000행 정도로 제한
+    return last_id_row if last_id_row > 0 else min(upper, 1000)
+
+
+def get_template_source_max_row(ws, *, keyword: str = "여기서부터") -> int:
+    """
+    ✅ '끝까지 허용'의 끝 = template source 영역의 끝
+    - 구분자 있으면: sep_row - 1
+    - 구분자 없으면: infer_template_source_max_row()로 마지막 [id] 행까지
+    """
+    sep = detect_separator_row(ws, keyword=keyword)
+    if sep is not None and sep > 1:
+        return sep - 1
+    return infer_template_source_max_row(ws)
 
 # ===============================
 # Template source 보호 write
@@ -441,47 +536,124 @@ def find_template_for_category_path(category_path: str) -> Path:
          - 또는 prefix_norm 이 key_norm 안에 포함
       3) 그래도 없으면, 전체 category_path 기준으로
          "가장 긴 부분 문자열로 겹치는" 기존 방식으로 한 번 더 시도.
+      4) 그래도 없으면 KeyError 발생.
+    -------------------------------------------------------
+    ✅ 이 함수는 “쿠팡 카테고리 길(경로)”을 보고,
+       그 카테고리에 맞는 “엑셀 템플릿 파일”을 고르는 역할을 합니다.
+
+    예)
+      category_path = '주방용품>취사도구>냄비>양수냄비'
+      → 이 카테고리에 맞는 sellertool_upload_...xlsm 파일을 찾습니다.
+
+    ⭐ 아주 중요한 규칙
+      - 뎁스(단계)는 오직 '>' 기호로만 나뉩니다.
+      - '/' 는 단계가 아닙니다. (그냥 글자일 뿐)
+        예: '냄비/냄비세트' 는 “하나의 이름”입니다.
     """
+
+    # 0) 템플릿 목록(인덱스)을 준비한다.
+    #    index 예시:
+    #      {
+    #        "10-3_식품>건강식품>건강식품/영양식": Path("...xlsm"),
+    #        "10-4_식품>건강식품>전통건강식품/헬스/다이어트": Path("...xlsm"),
+    #        ...
+    #      }
     index = _build_template_index()
+
+    # 1) 입력이 비어있으면 바로 에러
     if not category_path:
         raise KeyError("카테고리 경로가 비어 있습니다.")
 
+    # 2) '>' 기준으로 자른다. 이것이 곧 “뎁스(단계)”가 된다.
+    #    예: '식품>건강식품>전통건강식품/헬스/다이어트'
+    #       parts = ['식품', '건강식품', '전통건강식품/헬스/다이어트']
     parts = [p.strip() for p in category_path.split(">") if p.strip()]
     if not parts:
         raise KeyError(f"파싱할 수 없는 카테고리 경로입니다: {category_path}")
 
-    # 미리 정규화된 key 캐시
+    # 3) 템플릿 key들도 “비교하기 쉽게” 미리 정리해 둔다(정규화).
+    #    _normalize_category_text()는 보통
+    #      - 공백 제거
+    #      - 특수문자 처리
+    #    같은 것을 해서 비교를 쉽게 만듭니다.
     norm_index: dict[str, str] = {
         key: _normalize_category_text(key) for key in index.keys()
     }
 
-    # 1) depth 를 줄여가며 prefix 매칭 시도
+    # ------------------------------------------------------------
+    # 4) 여기부터가 핵심:
+    #    “긴 경로부터” 먼저 맞춰보고, 안 맞으면 “조금씩 짧게” 줄여서 다시 맞춰본다.
+    #
+    #    예: parts = ['식품', '건강식품', '전통건강식품/헬스/다이어트']
+    #      depth=3 : '식품>건강식품>전통건강식품/헬스/다이어트'  (가장 자세함)
+    #      depth=2 : '식품>건강식품'                           (덜 자세함)
+    #      depth=1 : '식품'                                    (너무 넓음)
+    #
+    #    ✅ 원칙: “가능하면 3뎁스 이상에서 딱 맞추는 게 가장 안전”합니다.
+    # ------------------------------------------------------------
     for depth in range(len(parts), 0, -1):
+
         prefix = ">".join(parts[:depth])
         prefix_norm = _normalize_category_text(prefix)
 
-        # 1-1) exact match 우선
+        # --------------------------------------------------------
+        # 4-1) 1순위: exact match (정확히 똑같이 맞는지)
+        # --------------------------------------------------------
         exact_matches: list[str] = [
             key for key, key_norm in norm_index.items()
             if key_norm == prefix_norm
         ]
         if exact_matches:
-            # 가장 긴 key (뎁스 많은 것) 선택
+            # 여러 개면 가장 “긴 key” 선택
+            # (보통 더 자세한 템플릿이 길어서 이게 유리함)
             best_key = max(exact_matches, key=lambda k: len(norm_index[k]))
             return index[best_key]
 
-        # 1-2) 포함 관계 매칭 (양방향)
+        # --------------------------------------------------------
+        # 4-2) 2순위: 포함관계 match (서로 포함되어 있으면 후보)
+        # --------------------------------------------------------
         candidates: list[str] = [
             key for key, key_norm in norm_index.items()
             if key_norm in prefix_norm or prefix_norm in key_norm
         ]
         if candidates:
-            # prefix 와 가장 비슷하게(문자열 길이 가장 긴 것) 선택
+            # 후보가 여러 개면 가장 “긴 key” 선택
             best_key = max(candidates, key=lambda k: len(norm_index[k]))
             return index[best_key]
 
-    # 2) 그래도 못 찾으면: 전체 category_path 기준으로
-    #    "가장 긴 부분 문자열로 겹치는" 템플릿을 선택 (기존 fallback)
+        # --------------------------------------------------------
+        # ⭐⭐⭐ 여기서 2뎁스 위험성이 발생할 수 있는 이유 ⭐⭐⭐
+        #
+        # depth가 2가 되었을 때 prefix는 보통 "대분류>2뎁스" 수준입니다.
+        # 예: '식품>건강식품'
+        #
+        # 그런데 템플릿 파일이 이런 식으로 여러 개 있을 수 있습니다:
+        #   - '10-3_식품>건강식품>건강식품/영양식'
+        #   - '10-4_식품>건강식품>전통건강식품/헬스/다이어트'
+        #
+        # 이 둘은 둘 다 prefix('식품>건강식품')를 포함합니다.
+        # 그러면 candidates가 2개가 되고,
+        # 코드가 "그냥 길이가 더 긴 것"을 골라 버립니다.
+        #
+        # ✅ 만약 우리가 원하는 건 '영양식' 템플릿인데
+        #    우연히 '전통건강식품...' 템플릿이 더 길면
+        #    잘못된 엑셀을 선택할 수도 있습니다.
+        #
+        # 👉 그래서 “3뎁스 이상에서 매칭이 실패해서 2뎁스까지 내려오는 순간”
+        #    오선택 위험이 생깁니다.
+        #
+        # (즉, 2뎁스가 중복된 폴더 구조 자체가 문제라기보다,
+        #  2뎁스까지만 정보가 남아 매칭될 때가 위험한 순간입니다.)
+        # --------------------------------------------------------
+
+    # ------------------------------------------------------------
+    # 5) 그래도 못 찾으면, 마지막 “응급처치 fallback”:
+    #    전체 category_path와 템플릿 key가
+    #    서로 포함관계인지 보면서 “가장 긴 것”을 고른다.
+    #
+    #    이건 정확도가 떨어질 수 있어서
+    #    가능하면 위에서(3뎁스 이상) 잡히는 게 좋습니다.
+    # ------------------------------------------------------------
     category_norm = _normalize_category_text(category_path)
     best_key = None
     best_len = -1
@@ -495,7 +667,7 @@ def find_template_for_category_path(category_path: str) -> Path:
     if best_key is not None:
         return index[best_key]
 
-    # 3) 완전히 매칭 실패했을 때
+    # 6) 완전히 실패하면: 어떤 템플릿이 있는지 보여주고 에러
     available = ", ".join(sorted(index.keys()))
     raise KeyError(
         f"카테고리 경로에 맞는 템플릿을 찾지 못했습니다: {category_path} "

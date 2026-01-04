@@ -43,6 +43,20 @@
       ],
       "target_category_id": "80292",
       "reason": "사용자 수동 선택 기반 강제 룰 (source=홈/키친 / 조리용품 / 쿡웨어, name=쿡에버 통 5중 스테인레스 뚝배기 세트 4P)"
+    },
+    {
+      "keywords": [
+        "양수"
+      ],
+      "target_category_id": "80289",
+      "reason": "사용자 수동 선택 기반 강제 룰 (source=선물세트 / 선물세트 / 비식품 선물세트, name=AMT 피렌체 팬 & 양수 냄비 2종 세트 16cm)"
+    },
+    {
+      "keywords": [
+        "냄비세트"
+      ],
+      "target_category_id": "80312",
+      "reason": "사용자 수동 선택 기반 강제 룰 (source=홈/키친 / 조리용품 / 쿡웨어, name=에델코첸 통 3중 스택이지 냄비세트 4P)"
     }
   ]
 }

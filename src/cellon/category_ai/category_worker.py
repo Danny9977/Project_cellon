@@ -14,6 +14,9 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from .category_loader import get_category_master
 from .category_rules_builder import build_coupang_rules_for_all_groups
 
+from .category_ai_meta_rules_builder import build_meta_rules
+
+
 class CategoryBuildWorker(QThread):
     """
     카테고리 엑셀들을 읽어서 마스터 테이블을 만드는 워커(QThread).
@@ -41,6 +44,28 @@ class CategoryBuildWorker(QThread):
                 category_dir=self.category_dir,
                 progress_cb=_cb
             )
+
+            # 1) category_excels → category_master DataFrame 생성
+            df: pd.DataFrame = get_category_master(
+                category_dir=self.category_dir,
+                progress_cb=_cb
+            )
+
+            # ✅ [PATCH] 1차 meta 룰(엑셀/index 기반) 자동 보강: meta/coupang_{group}.json
+            try:
+                self.progress.emit(90, "meta 룰 JSON(엑셀/index 기반) 보강 중...")
+                project_root = Path(__file__).resolve().parents[3]  # .../src/cellon/category_ai/.. -> repo root
+                build_meta_rules(
+                    index_path=project_root / "assets/cache/coupang_upload_index.json",
+                    meta_dir=project_root / "src/cellon/rules/meta",
+                    group=None,          # kitchen/food 모두(감지된 그룹)
+                    dry_run=False,
+                    verbose=False,
+                )
+                self.progress.emit(92, "meta 룰 JSON 보강 완료")
+            except Exception as e:
+                self.error.emit(f"[meta_rules_builder] meta 룰 보강 실패: {e}")
+
 
             # 2) 방금 만든 df 를 기반으로 coupang 룰 JSON 자동 생성
             try:

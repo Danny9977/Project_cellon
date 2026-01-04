@@ -1,0 +1,309 @@
+{
+  "__meta__": {
+    "group": "food",
+    "version": 1
+  },
+  "meta_food_bb28403a": {
+    "label": "식품>냉장:냉동식품>햄:소시지:어묵:맛살",
+    "keywords_include": [
+      "식품",
+      "냉장",
+      "냉동식품",
+      "소시지",
+      "어묵",
+      "맛살"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_38647e52": {
+    "label": "식품>가루:조미료:향신료",
+    "keywords_include": [
+      "식품",
+      "가루",
+      "조미료",
+      "향신료"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_c7c417ed": {
+    "label": "식품>장:소스",
+    "keywords_include": [
+      "식품",
+      "소스"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_308a3fa7": {
+    "label": "식품>냉장:냉동식품>김치:반찬:젓갈",
+    "keywords_include": [
+      "식품",
+      "냉장",
+      "냉동식품",
+      "김치",
+      "반찬",
+      "젓갈"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_cccf1715": {
+    "label": "식품>건강식품>헬스:다이어트",
+    "keywords_include": [
+      "식품",
+      "건강식품",
+      "헬스",
+      "다이어트"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_cf980316": {
+    "label": "식품>냉장:냉동식품>냉장냉동 간편조리",
+    "keywords_include": [
+      "식품",
+      "냉장",
+      "냉동식품",
+      "냉장냉동",
+      "간편조리"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_1b1e0406": {
+    "label": "식품>냉장:냉동식품>김밥:도시락:샐러드",
+    "keywords_include": [
+      "식품",
+      "냉장",
+      "냉동식품",
+      "김밥",
+      "도시락",
+      "샐러드"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_fcd5d7f4": {
+    "label": "식품>신선식품>쌀:잡곡류",
+    "keywords_include": [
+      "식품",
+      "신선식품",
+      "잡곡류"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_816c55bb": {
+    "label": "식품>스낵:간식",
+    "keywords_include": [
+      "식품",
+      "스낵",
+      "간식"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_e77576d2": {
+    "label": "식품>가공:즉석식품",
+    "keywords_include": [
+      "식품",
+      "가공",
+      "즉석식품"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_e70417f2": {
+    "label": "식품>커피.차",
+    "keywords_include": [
+      "식품",
+      "커피.차"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_155bcab3": {
+    "label": "식품>건강식품>건강식품",
+    "keywords_include": [
+      "식품",
+      "건강식품"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_7473984b": {
+    "label": "식품>신선식품>채소류",
+    "keywords_include": [
+      "식품",
+      "신선식품",
+      "채소류"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_449dce06": {
+    "label": "식품>건강식품>영양식",
+    "keywords_include": [
+      "식품",
+      "건강식품",
+      "영양식"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_c370e96e": {
+    "label": "식품>유제품:아이스크림:디저트",
+    "keywords_include": [
+      "식품",
+      "유제품",
+      "아이스크림",
+      "디저트"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_4ff741df": {
+    "label": "식품>전통주",
+    "keywords_include": [
+      "식품",
+      "전통주"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_8a92ea44": {
+    "label": "식품>신선식품>견과:견과류",
+    "keywords_include": [
+      "식품",
+      "신선식품",
+      "견과",
+      "견과류"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_cf8c2d51": {
+    "label": "식품>생수:음료>음료",
+    "keywords_include": [
+      "식품",
+      "생수",
+      "음료"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_7173d8a3": {
+    "label": "식품>신선식품>축산물:계란",
+    "keywords_include": [
+      "식품",
+      "신선식품",
+      "축산물",
+      "계란"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_1966d8e2": {
+    "label": "식품>냉장:냉동식품>연식품",
+    "keywords_include": [
+      "식품",
+      "냉장",
+      "냉동식품",
+      "연식품"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_811681e2": {
+    "label": "식품>신선식품>과일류",
+    "keywords_include": [
+      "식품",
+      "신선식품",
+      "과일류"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_654a4237": {
+    "label": "식품>신선식품>수산물:건어물",
+    "keywords_include": [
+      "식품",
+      "신선식품",
+      "수산물",
+      "건어물"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_4dd19941": {
+    "label": "식품>냉장:냉동식품>냉장면류",
+    "keywords_include": [
+      "식품",
+      "냉장",
+      "냉동식품",
+      "냉장면류"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  },
+  "meta_food_db8a6e5d": {
+    "label": "식품>건강식품>전통건강식품",
+    "keywords_include": [
+      "식품",
+      "건강식품",
+      "전통건강식품"
+    ],
+    "keywords_exclude": [],
+    "source_costco_paths": [],
+    "source_domemae_paths": [],
+    "source_owner_paths": []
+  }
+}

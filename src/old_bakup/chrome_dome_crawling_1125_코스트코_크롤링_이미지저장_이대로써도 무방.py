@@ -113,40 +113,6 @@ def today_iso() -> str:
     """YYYY-MM-DD 형식 오늘 날짜"""
     return datetime.now().strftime("%Y-%m-%d")
 
-# ---- 조회/표시할 상태: 결제완료 → 상품준비중 → 배송지시 → 배송중 → 배송완료
-CP_QUERY_STATUSES = ["ACCEPT", "INSTRUCT", "DEPARTURE", "DELIVERING", "DELIVERED"]
-
-
-# ---- 시트에 적을 한글 상태 라벨
-CP_STATUS_MAP = {
-    "ACCEPT":     "결제완료",     # 쿠팡 헬프/연동 문서에서 ACCEPT를 결제완료로 표현
-    "INSTRUCT":   "상품준비중",
-    "DEPARTURE":  "배송지시",     # ★ 핵심: 배송지시 = DEPARTURE
-    "DELIVERING": "배송중",
-    "DELIVERED":  "배송완료",
-}
-
-# ---- API별 상태 이름이 다른 경우를 흡수 (우선순위 순)
-ORDER_STATUS_ALIASES = {
-    # 결제완료
-    "ACCEPT":     ["ACCEPT", "PAID", "PAYMENT_COMPLETED", "ORDER_COMPLETE"],
-    # 상품준비중
-    "INSTRUCT":   ["INSTRUCT", "READY", "READY_FOR_DELIVERY", "PREPARE_SHIPMENT"],
-    # 배송지시 (핵심)
-    "DEPARTURE":  ["DEPARTURE", "DELIVERY_REQUESTED", "SHIPPING_READY"],
-    # 배송중
-    "DELIVERING": ["DELIVERING"],
-    # 배송완료 (계정/버전별 상이)
-    "DELIVERED":  ["DELIVERED", "DELIVERY_COMPLETED", "DONE", "FINAL_DELIVERY"],
-}
-
-STATUS_ORDER = {
-    "결제완료": 0,
-    "상품준비중": 1,
-    "배송지시": 2,   # ★ 추가
-    "배송중":   3,
-    "배송완료": 4,
-}
 
 # --- Coupang Open API (Wing) ---
 COUPANG_BASE_URL = "https://api-gateway.coupang.com"

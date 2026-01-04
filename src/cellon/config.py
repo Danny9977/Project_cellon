@@ -56,8 +56,11 @@ SELLERTOOL_SHEET_NAME = "data"
 
 # === 로컬 LLM(Ollama) 설정 ===
 LOCAL_LLM_BASE_URL = "http://localhost:11434"
-LOCAL_LLM_MODEL = "llama3:8b"
-# LOCAL_LLM_MODEL = "phi3:medium"
+#LOCAL_LLM_MODEL = "llama3:8b"
+#LOCAL_LLM_MODEL = "qwen2.5-coder:3b"
+#LOCAL_LLM_MODEL = "phi3:medium"
+LOCAL_LLM_MODEL = "qwen2.5:7b"
+#LOCAL_LLM_MODEL = "qwen2.5:7b-instruct"
 
 
 # =========================
